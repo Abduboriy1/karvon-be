@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Verify generated code is current
+        run: |
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.29.0
+          go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.5.0
+          make gen
+          git diff --exit-code -- internal/db/dbgen internal/http/gen
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.6.2
+
+      # Docker is available on ubuntu-latest, so the testcontainers suite runs too.
+      - name: Test
+        run: KARVON_INTEGRATION=1 go test ./... -race -count=1 -timeout 20m
+
+      - name: Build image
+        run: docker build -t karvon-be:ci .

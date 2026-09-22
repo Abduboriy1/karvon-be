@@ -1,0 +1,42 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - noctx
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - noctx
+      # Generated code is not ours to lint.
+      - path: internal/http/gen/
+        linters:
+          - revive
+          - staticcheck
+          - unused
+      - path: internal/db/dbgen/
+        linters:
+          - revive
+          - staticcheck
+          - unused
+
+formatters:
+  enable:
+    - gofmt

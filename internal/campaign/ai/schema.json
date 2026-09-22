@@ -1,0 +1,43 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["components", "variants"],
+  "properties": {
+    "components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "name", "body", "tags"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["subject", "hook", "problem", "value_prop", "proof", "cta", "closing", "ps"]
+          },
+          "name": { "type": "string" },
+          "body": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "variants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "subject", "hook", "problem", "value_prop", "proof", "cta", "closing", "ps"],
+        "properties": {
+          "name": { "type": "string" },
+          "subject": { "type": "integer" },
+          "hook": { "type": ["integer", "null"] },
+          "problem": { "type": ["integer", "null"] },
+          "value_prop": { "type": ["integer", "null"] },
+          "proof": { "type": ["integer", "null"] },
+          "cta": { "type": ["integer", "null"] },
+          "closing": { "type": ["integer", "null"] },
+          "ps": { "type": ["integer", "null"] }
+        }
+      }
+    }
+  }
+}

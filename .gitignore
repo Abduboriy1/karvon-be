@@ -1,0 +1,15 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Build output
+/bin/
+karvon-api
+karvon-migrate
+
+# Tooling
+/tmp/
+*.out
+coverage.*
+.DS_Store

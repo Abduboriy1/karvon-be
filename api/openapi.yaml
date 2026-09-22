@@ -1,0 +1,5053 @@
+openapi: 3.0.3
+info:
+  title: Karvon Scraper API
+  version: 1.0.0
+  description: |
+    REST API for Karvon: the scraper module (Google Maps lead scraping with website
+    email crawling) and the campaign module (outreach campaigns, contacts and their
+    lifecycle, reusable email content, consent and the two delivery providers). Live
+    job progress is delivered over Server-Sent Events.
+
+    All routes except `/healthz`, `/openapi.json` and `/webhooks/*` require
+    `Authorization: Bearer <KARVON_API_KEY>`. The `/webhooks/*` routes carry no API
+    key: they are called by Instantly and Mailchimp, and are authenticated instead by
+    the per-registration token in their path together with the secret that provider
+    signs its deliveries with.
+servers:
+  - url: /api/v1
+    description: Default mount point
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: system
+  - name: stats
+  - name: sources
+  - name: jobs
+  - name: businesses
+  - name: verification
+  - name: campaigns
+  - name: contacts
+  - name: content
+  - name: ai
+  - name: sending-accounts
+  - name: newsletter
+  - name: campaign-analytics
+  - name: integrations
+  - name: webhooks
+
+paths:
+  /healthz:
+    get:
+      tags: [system]
+      operationId: getHealth
+      summary: Liveness probe with dependency checks
+      security: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+        '503':
+          description: A dependency is unavailable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Health' }
+
+  /openapi.json:
+    get:
+      tags: [system]
+      operationId: getOpenapiSpec
+      summary: This OpenAPI document as JSON (used by the frontend codegen)
+      security: []
+      responses:
+        '200':
+          description: OpenAPI document
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+  /stats/scraper:
+    get:
+      tags: [stats]
+      operationId: getScraperStats
+      summary: Dashboard counters and per-job email chart data
+      responses:
+        '200':
+          description: Scraper statistics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScraperStats' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /sources:
+    get:
+      tags: [sources]
+      operationId: listSources
+      summary: List configured providers
+      responses:
+        '200':
+          description: Providers
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Source' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /sources/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [sources]
+      operationId: getSource
+      summary: Get a single provider
+      responses:
+        '200':
+          description: Provider
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [sources]
+      operationId: updateSource
+      summary: Update provider key, cost and enabled flag
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SourceUpdate' }
+      responses:
+        '200':
+          description: Updated provider
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Source' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /sources/{id}/test:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [sources]
+      operationId: testSource
+      summary: Validate the stored API key with a single-result provider call
+      responses:
+        '200':
+          description: Key works
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SourceTestResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Provider rejected the key or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /jobs/estimate:
+    post:
+      tags: [jobs]
+      operationId: estimateJob
+      summary: Estimate query count and provider cost for a config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JobCreate' }
+      responses:
+        '200':
+          description: Estimate
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobEstimate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /jobs:
+    get:
+      tags: [jobs]
+      operationId: listJobs
+      summary: Job history
+      parameters:
+        - name: status
+          in: query
+          description: Repeatable status filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/JobStatus' }
+          style: form
+          explode: true
+        - name: source_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          description: Only jobs created at or after this instant
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          description: Only jobs created at or before this instant
+          schema: { type: string, format: date-time }
+        - name: q
+          in: query
+          description: Case-insensitive match on job name
+          schema: { type: string, maxLength: 200 }
+        - name: sort
+          in: query
+          description: Sort field and direction
+          schema:
+            type: string
+            default: created_at:desc
+            enum: [created_at:desc, created_at:asc, name:asc, name:desc, status:asc, status:desc, started_at:desc, started_at:asc]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated jobs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [jobs]
+      operationId: createJob
+      summary: Create and enqueue a scrape job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/JobCreate' }
+      responses:
+        '201':
+          description: Created job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /jobs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [jobs]
+      operationId: getJob
+      summary: Job detail including stats
+      responses:
+        '200':
+          description: Job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [jobs]
+      operationId: deleteJob
+      summary: Delete a job with its queries, events and result links
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /jobs/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [jobs]
+      operationId: cancelJob
+      summary: Cooperatively cancel a queued or running job
+      responses:
+        '200':
+          description: Cancelled job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /jobs/{id}/rerun:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [jobs]
+      operationId: rerunJob
+      summary: Clone a job's config into a new queued job
+      responses:
+        '201':
+          description: New job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /jobs/{id}/recrawl:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [jobs]
+      operationId: recrawlJob
+      summary: Re-crawl a finished job's websites for emails without a new provider search
+      description: |
+        Creates a new job that owns the same businesses as the source job and enters
+        the pipeline at the crawl stage. No Google Maps query is sent to the provider
+        and nothing is billed. Businesses that already carry an address are skipped;
+        the rest have their websites fetched again. The source job must have finished.
+      responses:
+        '201':
+          description: New re-crawl job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The job is still running, or has no businesses to re-crawl
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /jobs/{id}/events:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [jobs]
+      operationId: streamJobEvents
+      summary: Server-Sent Events stream of job progress, logs and status
+      description: |
+        `text/event-stream`. Event names are `progress`, `log` and `status`; every event
+        carries a monotonic `id`. Reconnect with the `Last-Event-ID` header (or `?after=`)
+        to replay missed events. A `: ping` comment is sent every 15 seconds. The stream
+        closes once the job reaches a terminal status.
+      parameters:
+        - name: after
+          in: query
+          description: Replay events with an id greater than this value
+          schema: { type: integer, format: int64, minimum: 0 }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /jobs/{id}/export.csv:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [jobs]
+      operationId: exportJobCsv
+      summary: Stream this job's businesses and emails as CSV
+      responses:
+        '200':
+          description: CSV attachment
+          content:
+            text/csv:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /businesses:
+    get:
+      tags: [businesses]
+      operationId: listBusinesses
+      summary: Master business list
+      parameters:
+        - name: job_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: category
+          in: query
+          schema: { type: string, maxLength: 200 }
+        - name: state
+          in: query
+          schema: { type: string, maxLength: 100 }
+        - name: city
+          in: query
+          schema: { type: string, maxLength: 200 }
+        - name: has_email
+          in: query
+          schema: { type: boolean }
+        - name: suppressed
+          in: query
+          description: Defaults to false; pass true for only suppressed rows
+          schema: { type: boolean }
+        - name: q
+          in: query
+          description: Trigram search over name and domain
+          schema: { type: string, maxLength: 200 }
+        - name: email_source
+          in: query
+          schema: { $ref: '#/components/schemas/EmailSource' }
+        - name: verification_tag
+          in: query
+          description: Repeatable filter on the tag of the business's primary address
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/VerificationTag' }
+          style: form
+          explode: true
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: created_at:desc
+            enum: [created_at:desc, created_at:asc, name:asc, name:desc, city:asc, city:desc, state:asc, state:desc, rating:desc, rating:asc, reviews:desc, reviews:asc, verification_score:desc, verification_score:asc]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated businesses
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BusinessList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /businesses/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [businesses]
+      operationId: getBusiness
+      summary: Business detail with every known email
+      responses:
+        '200':
+          description: Business
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BusinessDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [businesses]
+      operationId: updateBusiness
+      summary: Update suppression flag or notes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessUpdate' }
+      responses:
+        '200':
+          description: Updated business
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BusinessDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /businesses/bulk:
+    post:
+      tags: [businesses]
+      operationId: bulkUpdateBusinesses
+      summary: Suppress or unsuppress many businesses at once
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessBulkRequest' }
+      responses:
+        '200':
+          description: Number of rows changed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BulkResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /businesses/export:
+    post:
+      tags: [businesses]
+      operationId: exportBusinesses
+      summary: Stream a filtered business set as CSV
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessExportRequest' }
+      responses:
+        '200':
+          description: CSV attachment
+          content:
+            text/csv:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /verification/stats:
+    get:
+      tags: [verification]
+      operationId: getVerificationStats
+      summary: Tag distribution, pass coverage, credits and the current cost to verify
+      responses:
+        '200':
+          description: Verification statistics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationStats' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /verification/settings:
+    get:
+      tags: [verification]
+      operationId: getVerificationSettings
+      summary: Provider weights, toggles, the paid band and live provider health
+      responses:
+        '200':
+          description: The current verification settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationSettingsView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [verification]
+      operationId: updateVerificationSettings
+      summary: Replace the verification settings
+      description: |
+        The weights of every weighted provider must total 100%, whether or not each
+        provider is enabled; a disabled or unreachable provider has its weight
+        redistributed at scoring time rather than requiring the operator to
+        re-balance. `paid_min_score` must not exceed `paid_threshold`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerificationSettingsUpdate' }
+      responses:
+        '200':
+          description: The saved settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationSettingsView' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /verification/emails:
+    get:
+      tags: [verification]
+      operationId: listVerifications
+      summary: Every address that has been through, or is queued for, verification
+      parameters:
+        - name: tag
+          in: query
+          description: Repeatable tag filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/VerificationTag' }
+          style: form
+          explode: true
+        - name: min_score
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 100 }
+        - name: max_score
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 100 }
+        - name: pass2_status
+          in: query
+          schema: { $ref: '#/components/schemas/Pass2Status' }
+        - name: needs_third_party
+          in: query
+          description: |
+            Only addresses that passed the local gate, fall inside the paid band and
+            have never been sent to a third-party verifier. An address is sent to one
+            at most once, ever, so this set only ever shrinks.
+          schema: { type: boolean }
+        - name: has_typo
+          in: query
+          schema: { type: boolean }
+        - name: q
+          in: query
+          description: Trigram search over the address
+          schema: { type: string, maxLength: 200 }
+        - name: business_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: job_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: include_suppressed
+          in: query
+          description: Defaults to false, which hides addresses held only by suppressed businesses
+          schema: { type: boolean }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: final_score:desc
+            enum: [final_score:desc, final_score:asc, email:asc, email:desc,
+                   pass1_verified_at:desc, pass1_verified_at:asc,
+                   pass2_verified_at:desc, pass2_verified_at:asc,
+                   third_party_sent_at:desc, third_party_sent_at:asc,
+                   updated_at:desc, updated_at:asc]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated verifications
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVerificationList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /verification/emails/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [verification]
+      operationId: getVerification
+      summary: One address with its full Pass 1 breakdown and raw provider payload
+      responses:
+        '200':
+          description: Verification
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVerificationDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /verification/emails/{id}/self:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [verification]
+      operationId: verifyEmailSelf
+      summary: Queue the free local pass for one address
+      responses:
+        '202':
+          description: The run that will score this address
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /verification/emails/{id}/third-party:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [verification]
+      operationId: verifyEmailThirdParty
+      summary: Queue the paid provider check for one address
+      description: |
+        Refused with 409 when the address has already been sent to a third-party
+        verifier, has not completed the local pass, scored below the gate, or scored
+        at or above the confidence threshold. The first of those is permanent: an
+        address is sent to a third party at most once, ever, and no setting, score or
+        retry lifts that. In every case nothing would be billed, so the request is
+        rejected rather than silently skipped.
+      responses:
+        '202':
+          description: The run that will verify this address
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /verification/emails/{id}/apply-typo:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [verification]
+      operationId: applyTypoSuggestion
+      summary: Rewrite every business holding the misspelled address to the suggested one
+      description: |
+        A business that already holds the corrected address keeps it and loses the
+        misspelled row. Primary addresses are re-picked afterwards and the corrected
+        address is queued for local verification. The response is the corrected
+        address's verification row.
+      responses:
+        '200':
+          description: The corrected address
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVerificationDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /verification/runs/estimate:
+    post:
+      tags: [verification]
+      operationId: estimateVerificationRun
+      summary: How many addresses a run would process, and what it would cost
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerificationRunEstimateRequest' }
+      responses:
+        '200':
+          description: Estimate
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRunEstimate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /verification/runs:
+    get:
+      tags: [verification]
+      operationId: listVerificationRuns
+      summary: Run history
+      parameters:
+        - name: pass
+          in: query
+          schema: { $ref: '#/components/schemas/VerificationPass' }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/JobStatus' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated runs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRunList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [verification]
+      operationId: createVerificationRun
+      summary: Start a bulk verification run
+      description: |
+        A `third_party` run must carry `max_cost_cents`: the server re-estimates and
+        refuses with 409 if the cost has grown past what was approved, so a run can
+        never spend more than the figure the operator confirmed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerificationRunCreate' }
+      responses:
+        '201':
+          description: Created run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRun' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /verification/runs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [verification]
+      operationId: getVerificationRun
+      summary: Run progress, polled while a run is active
+      responses:
+        '200':
+          description: Run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /verification/runs/{id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [verification]
+      operationId: cancelVerificationRun
+      summary: Cooperatively cancel a queued or running verification run
+      responses:
+        '200':
+          description: Cancelled run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/VerificationRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /integrations:
+    get:
+      tags: [integrations]
+      operationId: getIntegrations
+      summary: State of every outreach integration, its webhook and its event log
+      responses:
+        '200':
+          description: Integration status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Integrations' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /integrations/instantly/test:
+    post:
+      tags: [integrations]
+      operationId: testInstantlyConnection
+      summary: Validate the stored Instantly key with a single API call
+      responses:
+        '200':
+          description: The key works
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderTestResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502':
+          description: Instantly rejected the key or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /integrations/instantly/webhook:
+    post:
+      tags: [integrations]
+      operationId: registerInstantlyWebhook
+      summary: Register (or rotate) the Instantly webhook that feeds the event log
+      description: |
+        Without `rotate` an already registered webhook is left alone and returned as
+        it stands. With `rotate` the token and signing secret are replaced, which
+        invalidates the previous URL immediately.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WebhookRegisterRequest' }
+      responses:
+        '200':
+          description: The registered webhook
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Instantly refused the registration or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [integrations]
+      operationId: deleteInstantlyWebhook
+      summary: Remove the Instantly webhook registration
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /integrations/mailchimp/test:
+    post:
+      tags: [integrations]
+      operationId: testMailchimpConnection
+      summary: Validate the stored Mailchimp key with a single API call
+      responses:
+        '200':
+          description: The key works
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderTestResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '502':
+          description: Mailchimp rejected the key or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /integrations/events:
+    get:
+      tags: [integrations]
+      operationId: listProviderEvents
+      summary: The raw provider event log, newest first
+      parameters:
+        - name: provider
+          in: query
+          schema: { $ref: '#/components/schemas/ProviderName' }
+        - name: processed
+          in: query
+          schema: { type: boolean }
+        - name: has_error
+          in: query
+          schema: { type: boolean }
+        - name: contact_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated provider events
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderEventList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /integrations/events/{id}/reprocess:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [integrations]
+      operationId: reprocessProviderEvent
+      summary: Replay one stored provider event through the ingest pipeline
+      responses:
+        '202':
+          description: The event, queued for reprocessing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProviderEvent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /integrations/sync-runs:
+    get:
+      tags: [integrations]
+      operationId: listSyncRuns
+      summary: History of the reconciliation runs against both providers
+      parameters:
+        - name: kind
+          in: query
+          schema: { $ref: '#/components/schemas/SyncRunKind' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated sync runs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SyncRunList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /webhooks/instantly/{token}:
+    parameters:
+      - $ref: '#/components/parameters/WebhookTokenPath'
+    post:
+      tags: [webhooks]
+      operationId: receiveInstantlyWebhook
+      summary: Instantly event delivery endpoint
+      description: |
+        Not an API-key route. The path token identifies the registration and the
+        request is additionally authenticated by the signature Instantly computes
+        with the shared secret; both must match or the delivery is rejected with 401.
+        The body is stored verbatim and processed asynchronously, so a duplicate
+        delivery is acknowledged rather than applied twice.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '202':
+          description: Delivery accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookAck' }
+        '401':
+          description: Bad signature
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Unknown token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /webhooks/mailchimp/{token}:
+    parameters:
+      - $ref: '#/components/parameters/WebhookTokenPath'
+    get:
+      tags: [webhooks]
+      operationId: verifyMailchimpWebhook
+      summary: Mailchimp's reachability probe, which must answer 200 with no body
+      security: []
+      responses:
+        '200': { description: Endpoint reachable }
+        '404':
+          description: Unknown token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    post:
+      tags: [webhooks]
+      operationId: receiveMailchimpWebhook
+      summary: Mailchimp event delivery endpoint
+      description: |
+        Not an API-key route. Mailchimp posts form-encoded fields to a URL whose path
+        token identifies the audience; the token is the shared secret, so an unknown
+        one is a 404 and a malformed delivery a 401.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200':
+          description: Delivery accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookAck' }
+        '401':
+          description: Delivery could not be authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Unknown token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /campaigns:
+    get:
+      tags: [campaigns]
+      operationId: listCampaigns
+      summary: Campaign list with the counters the dashboard shows
+      parameters:
+        - name: status
+          in: query
+          description: Repeatable status filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/CampaignStatus' }
+          style: form
+          explode: true
+        - name: q
+          in: query
+          description: Case-insensitive match on campaign name
+          schema: { type: string, maxLength: 200 }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: created_at:desc
+            enum: [created_at:desc, created_at:asc, name:asc, name:desc,
+                   launched_at:desc, launched_at:asc, leads_total:desc, leads_total:asc,
+                   updated_at:desc, updated_at:asc]
+        - name: include_archived
+          in: query
+          description: Defaults to false, which hides archived campaigns unless `status` asks for them
+          schema: { type: boolean }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated campaigns
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [campaigns]
+      operationId: createCampaign
+      summary: Create a draft campaign
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CampaignCreate' }
+      responses:
+        '201':
+          description: Created campaign
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaigns/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [campaigns]
+      operationId: getCampaign
+      summary: Campaign with its sending accounts, variants, counts and launch checklist
+      responses:
+        '200':
+          description: Campaign detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [campaigns]
+      operationId: updateCampaign
+      summary: Update a campaign's name, brief, schedule, settings or steps
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CampaignUpdate' }
+      responses:
+        '200':
+          description: Updated campaign
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [campaigns]
+      operationId: archiveCampaign
+      summary: Archive a campaign
+      description: |
+        Campaigns are never deleted: the send history, the events and the consent
+        trail behind them have to survive. The campaign is moved to `archived` and
+        disappears from the default list.
+      responses:
+        '200':
+          description: Archived campaign
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /campaigns/{id}/checklist:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [campaigns]
+      operationId: getCampaignChecklist
+      summary: What still stands between this campaign and a launch
+      responses:
+        '200':
+          description: Checklist
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignChecklist' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /campaigns/{id}/launch:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [campaigns]
+      operationId: launchCampaign
+      summary: Create the campaign at Instantly and start pushing its leads
+      description: |
+        The pre-launch checklist is re-evaluated server-side; a blocking item refuses
+        the launch with 409 and the failing items in `error.details`, so the client
+        never has to guess which one it was. The push itself runs in the background.
+      responses:
+        '202':
+          description: The campaign, now launching
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: A blocking checklist item failed, or the campaign is already launched
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: Instantly refused the campaign or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /campaigns/{id}/pause:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [campaigns]
+      operationId: pauseCampaign
+      summary: Pause sending at Instantly
+      responses:
+        '200':
+          description: Paused campaign
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502':
+          description: Instantly refused the change or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /campaigns/{id}/resume:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [campaigns]
+      operationId: resumeCampaign
+      summary: Resume a paused campaign
+      responses:
+        '200':
+          description: Resumed campaign
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502':
+          description: Instantly refused the change or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /campaigns/{id}/sync:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [campaigns]
+      operationId: syncCampaign
+      summary: Queue a reconciliation of this campaign against Instantly
+      responses:
+        '202': { description: Reconciliation queued }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /campaigns/{id}/sending-accounts:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    put:
+      tags: [campaigns]
+      operationId: setCampaignSendingAccounts
+      summary: Replace the set of mailboxes this campaign sends from
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CampaignSendingAccountsRequest' }
+      responses:
+        '200':
+          description: The campaign's sending accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SendingAccount' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaigns/{id}/variants:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [campaigns]
+      operationId: listCampaignVariants
+      summary: The variants attached to this campaign with their per-step weights
+      responses:
+        '200':
+          description: Campaign variants
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CampaignVariant' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [campaigns]
+      operationId: setCampaignVariants
+      summary: Replace the variant mix, which bumps the campaign's weights version
+      description: |
+        Assignments already locked to a contact keep the variant they were given, so
+        a re-weighting only affects leads that have not been assigned yet. The weights
+        of each step must be positive; a step whose weights total zero is rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CampaignVariantsRequest' }
+      responses:
+        '200':
+          description: The campaign's variants
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CampaignVariant' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaigns/{id}/leads:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [campaigns]
+      operationId: listCampaignLeads
+      summary: The campaign's leads joined with their contacts
+      parameters:
+        - name: status
+          in: query
+          description: Repeatable lead status filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/CampaignLeadStatus' }
+          style: form
+          explode: true
+        - name: stage
+          in: query
+          description: Repeatable filter on the contact's lifecycle stage
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/ContactStage' }
+          style: form
+          explode: true
+        - name: q
+          in: query
+          description: Case-insensitive match on email, company or name
+          schema: { type: string, maxLength: 200 }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: created_at:desc
+            enum: [created_at:desc, created_at:asc, email:asc, email:desc,
+                   last_contacted_at:desc, last_contacted_at:asc,
+                   last_replied_at:desc, status:asc, stage:asc]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated campaign leads
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignLeadList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaigns/{id}/leads/import:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [campaigns]
+      operationId: importCampaignLeads
+      summary: Turn scraped businesses into contacts and attach them as leads
+      description: |
+        Suppressed contacts, addresses that fail validation and contacts already on
+        this campaign are skipped rather than refused, and counted separately in the
+        result so the operator can see what the filter really brought in.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LeadImportRequest' }
+      responses:
+        '200':
+          description: What the import did
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LeadImportResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaigns/{id}/leads/import/estimate:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [campaigns]
+      operationId: estimateCampaignLeadImport
+      summary: What the same import would do, without doing it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LeadImportRequest' }
+      responses:
+        '200':
+          description: Estimate
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LeadImportResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaigns/{id}/leads/{leadId}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/LeadIdPath'
+    get:
+      tags: [campaigns]
+      operationId: getCampaignLead
+      summary: One lead with its contact, variant assignments, sends and events
+      responses:
+        '200':
+          description: Lead detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignLeadDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [campaigns]
+      operationId: deleteCampaignLead
+      summary: Remove a lead from the campaign
+      description: |
+        Only a lead that has not been contacted can be removed; once a send exists the
+        lead is history and is skipped instead.
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /campaigns/{id}/activity:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [campaigns]
+      operationId: listCampaignActivity
+      summary: This campaign's slice of the contact event log
+      parameters:
+        - name: type
+          in: query
+          description: Repeatable event type filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/ContactEventType' }
+          style: form
+          explode: true
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated events
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactEventList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /contacts:
+    get:
+      tags: [contacts]
+      operationId: listContacts
+      summary: The contact master list
+      parameters:
+        - name: stage
+          in: query
+          description: Repeatable lifecycle stage filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/ContactStage' }
+          style: form
+          explode: true
+        - name: suppressed
+          in: query
+          schema: { type: boolean }
+        - name: has_consent
+          in: query
+          description: Whether the contact holds an un-revoked consent record
+          schema: { type: boolean }
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          description: Case-insensitive match on email, company or name
+          schema: { type: string, maxLength: 200 }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: created_at:desc
+            enum: [created_at:desc, created_at:asc, email:asc, email:desc,
+                   stage_changed_at:desc, last_event_at:desc, stage:asc]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated contacts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /contacts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [contacts]
+      operationId: getContact
+      summary: One contact with its campaigns, consents, suppressions and subscriptions
+      responses:
+        '200':
+          description: Contact detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [contacts]
+      operationId: updateContact
+      summary: Update the contact's profile fields
+      description: |
+        The email address is not editable: it is the identity the provider, the
+        consent record and the event log all hang off.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContactUpdate' }
+      responses:
+        '200':
+          description: Updated contact
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /contacts/{id}/timeline:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [contacts]
+      operationId: getContactTimeline
+      summary: Everything that has happened to this contact, newest first
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated events
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactEventList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /contacts/{id}/permission-request:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [contacts]
+      operationId: requestContactPermission
+      summary: Record that newsletter permission was asked for
+      description: |
+        This only moves the contact to `permission_requested` and writes the event. It
+        grants nothing: the newsletter gate still needs a consent record, captured
+        separately once the contact actually answers.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PermissionRequest' }
+      responses:
+        '200':
+          description: Updated contact
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /contacts/{id}/consents:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [contacts]
+      operationId: createContactConsent
+      summary: Capture the permission that lets this contact be pushed to the newsletter
+      description: |
+        `evidence` is the record of what was actually said — the quoted reply, the form
+        payload, the note from the call — and `captured_by` the operator answering for
+        it. Both are mandatory: a consent record without them cannot be defended later.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConsentCreate' }
+      responses:
+        '201':
+          description: The captured consent
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Consent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /contacts/{id}/consents/{consentId}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/ConsentIdPath'
+    post:
+      tags: [contacts]
+      operationId: revokeContactConsent
+      summary: Withdraw a consent record
+      description: |
+        The record is kept and stamped with the revocation rather than deleted, so the
+        audit trail still shows that permission once existed and when it ended.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConsentRevokeRequest' }
+      responses:
+        '200':
+          description: Updated contact
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /contacts/{id}/suppress:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [contacts]
+      operationId: suppressContact
+      summary: Stop contacting this person
+      description: |
+        Only the reversible reasons can be applied by hand. `unsubscribed`, `bounced`
+        and `invalid_email` are permanent and are written by the provider webhooks, not
+        by an operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SuppressRequest' }
+      responses:
+        '200':
+          description: Updated contact
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /contacts/{id}/suppressions/{suppressionId}/lift:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+      - $ref: '#/components/parameters/SuppressionIdPath'
+    post:
+      tags: [contacts]
+      operationId: liftContactSuppression
+      summary: Lift a reversible suppression
+      description: |
+        Refused with 409 when the suppression is a permanent one: an unsubscribe, a
+        hard bounce or an invalid address can never be lifted, whoever asks.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SuppressionLiftRequest' }
+      responses:
+        '200':
+          description: Updated contact
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /content/components:
+    get:
+      tags: [content]
+      operationId: listEmailComponents
+      summary: The reusable building blocks an email is assembled from
+      parameters:
+        - name: type
+          in: query
+          description: Repeatable component type filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/ComponentType' }
+          style: form
+          explode: true
+        - name: status
+          in: query
+          description: Repeatable status filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/ContentStatus' }
+          style: form
+          explode: true
+        - name: tag
+          in: query
+          schema: { type: string, maxLength: 60 }
+        - name: q
+          in: query
+          description: Case-insensitive match on name and body
+          schema: { type: string, maxLength: 200 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated components
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailComponentList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [content]
+      operationId: createEmailComponent
+      summary: Write a new component
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComponentCreate' }
+      responses:
+        '201':
+          description: Created component
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailComponent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /content/components/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [content]
+      operationId: getEmailComponent
+      summary: One component
+      responses:
+        '200':
+          description: Component
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailComponent' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [content]
+      operationId: updateEmailComponent
+      summary: Edit a component's text, name, tags or language
+      description: |
+        A component in use by a locked assignment cannot have its body changed: the
+        email that went out has to keep meaning what it said. Archive it and write a
+        new one instead.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComponentUpdate' }
+      responses:
+        '200':
+          description: Updated component
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailComponent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /content/components/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [content]
+      operationId: setEmailComponentStatus
+      summary: Move a component through the review flow
+      description: |
+        draft → reviewed → approved → active, with AI output entering at
+        `ai_generated`. Anything can be archived or sent back to draft; every other
+        jump is refused with 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContentStatusRequest' }
+      responses:
+        '200':
+          description: Updated component
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailComponent' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /content/components/{id}/usage:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [content]
+      operationId: getEmailComponentUsage
+      summary: Which variants, campaigns and locked assignments depend on this component
+      responses:
+        '200':
+          description: Usage
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ComponentUsage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /content/variants:
+    get:
+      tags: [content]
+      operationId: listEmailVariants
+      summary: The assembled email variants
+      parameters:
+        - name: status
+          in: query
+          description: Repeatable status filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/ContentStatus' }
+          style: form
+          explode: true
+        - name: step
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 5 }
+        - name: q
+          in: query
+          description: Case-insensitive match on variant name
+          schema: { type: string, maxLength: 200 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated variants
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVariantList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [content]
+      operationId: createEmailVariant
+      summary: Assemble components into a variant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VariantCreate' }
+      responses:
+        '201':
+          description: Created variant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVariantDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /content/variants/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [content]
+      operationId: getEmailVariant
+      summary: One variant with its slots and the campaigns using it
+      responses:
+        '200':
+          description: Variant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVariantDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [content]
+      operationId: updateEmailVariant
+      summary: Rename a variant, move its step or re-pick its components
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VariantUpdate' }
+      responses:
+        '200':
+          description: Updated variant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVariantDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /content/variants/{id}/status:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [content]
+      operationId: setEmailVariantStatus
+      summary: Move a variant through the review flow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ContentStatusRequest' }
+      responses:
+        '200':
+          description: Updated variant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailVariantDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /content/variants/{id}/preview:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [content]
+      operationId: previewEmailVariant
+      summary: Render a variant, optionally against a real contact
+      description: |
+        Without `contact_id` the placeholders are filled with sample values and listed
+        in `placeholders`, so the operator can see exactly which merge fields a live
+        send would need.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VariantPreviewRequest' }
+      responses:
+        '200':
+          description: Rendered email
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /content/preview:
+    post:
+      tags: [content]
+      operationId: previewEmailComponents
+      summary: Render an ad-hoc set of component slots without saving a variant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ComponentPreviewRequest' }
+      responses:
+        '200':
+          description: Rendered email
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmailPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /ai/provider:
+    get:
+      tags: [ai]
+      operationId: getAiProvider
+      summary: Which AI provider is configured and whether it generates or is pasted into
+      responses:
+        '200':
+          description: Provider
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIProvider' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /ai/generations:
+    get:
+      tags: [ai]
+      operationId: listAiGenerations
+      summary: Generation history
+      parameters:
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated generations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIGenerationList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [ai]
+      operationId: createAiGeneration
+      summary: Build the prompt for a brief, and run it when the provider can
+      description: |
+        A manual provider returns the generation at `awaiting_paste` with the prompt to
+        copy into ChatGPT; an API provider runs the round trip and returns it `parsed`.
+        Either way the brief, the prompt and its version are stored, so what produced a
+        piece of copy is still answerable months later.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AIGenerationCreate' }
+      responses:
+        '201':
+          description: Created generation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIGeneration' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: The AI provider refused the request or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /ai/generations/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [ai]
+      operationId: getAiGeneration
+      summary: One generation with its brief, prompt and parsed output
+      responses:
+        '200':
+          description: Generation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIGeneration' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /ai/generations/{id}/parse:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [ai]
+      operationId: parseAiGeneration
+      summary: Validate and store the JSON the operator pasted back from ChatGPT
+      description: |
+        Nothing is imported here. Output that does not match the schema is refused with
+        422; output that parses but has salvageable problems is stored with the
+        problems listed in `parsed.warnings`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AIParseRequest' }
+      responses:
+        '200':
+          description: The parsed generation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIGeneration' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /ai/generations/{id}/import:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [ai]
+      operationId: importAiGeneration
+      summary: Turn chosen parts of a parsed generation into components and variants
+      description: |
+        Omitting both index lists imports everything. Imported content lands at
+        `ai_generated` and still has to go through review before a campaign can use it.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AIImportRequest' }
+      responses:
+        '200':
+          description: What was imported
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AIImportResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /sending-accounts:
+    get:
+      tags: [sending-accounts]
+      operationId: listSendingAccounts
+      summary: The mailboxes Instantly sends from, with their recent stats
+      parameters:
+        - name: status
+          in: query
+          description: Instantly's numeric account status
+          schema: { type: integer }
+        - name: q
+          in: query
+          description: Case-insensitive match on the account's address
+          schema: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: Sending accounts
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/SendingAccount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /sending-accounts/sync:
+    post:
+      tags: [sending-accounts]
+      operationId: syncSendingAccounts
+      summary: Queue a refresh of the account list and its daily stats from Instantly
+      responses:
+        '202': { description: Sync queued }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /sending-accounts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [sending-accounts]
+      operationId: getSendingAccount
+      summary: One mailbox with its daily series and the campaigns it serves
+      responses:
+        '200':
+          description: Sending account detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SendingAccountDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /newsletter/audiences:
+    get:
+      tags: [newsletter]
+      operationId: listNewsletterAudiences
+      summary: The Mailchimp audiences known here
+      responses:
+        '200':
+          description: Audiences
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/NewsletterAudience' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /newsletter/audiences/sync:
+    post:
+      tags: [newsletter]
+      operationId: syncNewsletterAudiences
+      summary: Queue a refresh of the audience list from Mailchimp
+      responses:
+        '202': { description: Sync queued }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /newsletter/audiences/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    patch:
+      tags: [newsletter]
+      operationId: updateNewsletterAudience
+      summary: Set the audience's opt-in policy, default tags and default flag
+      description: |
+        `allow_single_opt_in` decides whether a push asks Mailchimp for `subscribed` or
+        for `pending`. Leaving it off means every contact still confirms by email,
+        whatever consent we already hold.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewsletterAudienceUpdate' }
+      responses:
+        '200':
+          description: Updated audience
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewsletterAudience' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /newsletter/audiences/{id}/webhook:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [newsletter]
+      operationId: registerNewsletterWebhook
+      summary: Register this audience's Mailchimp webhook
+      responses:
+        '200':
+          description: Updated audience
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewsletterAudience' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502':
+          description: Mailchimp refused the registration or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [newsletter]
+      operationId: deleteNewsletterWebhook
+      summary: Remove this audience's Mailchimp webhook
+      responses:
+        '200':
+          description: Updated audience
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewsletterAudience' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /newsletter/eligibility:
+    get:
+      tags: [newsletter]
+      operationId: listNewsletterEligibility
+      summary: Who could be pushed to the newsletter now, and who is one step short
+      description: |
+        Every row carries the consent gate's decision, including the reason a contact
+        is not eligible, so the UI never has to re-derive the rule.
+      parameters:
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: audience_id
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated candidates
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EligibleContactList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /newsletter/push:
+    post:
+      tags: [newsletter]
+      operationId: pushNewsletterContacts
+      summary: Queue contacts for Mailchimp
+      description: |
+        The consent gate is applied per contact rather than to the request as a whole:
+        contacts that pass are queued, contacts that do not come back in `rejected`
+        with the reason, and the request still succeeds.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NewsletterPushRequest' }
+      responses:
+        '200':
+          description: What was queued and what was refused
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewsletterPushResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /newsletter/subscriptions:
+    get:
+      tags: [newsletter]
+      operationId: listNewsletterSubscriptions
+      summary: Every subscription with what we asked for and what Mailchimp says
+      parameters:
+        - name: status
+          in: query
+          description: Repeatable filter on Mailchimp's status
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/SubscriptionStatus' }
+          style: form
+          explode: true
+        - name: sync_status
+          in: query
+          description: Repeatable filter on our own push state
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/SyncStatus' }
+          style: form
+          explode: true
+        - name: audience_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          description: Case-insensitive match on the contact's address
+          schema: { type: string, maxLength: 200 }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated subscriptions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewsletterSubscriptionList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /newsletter/subscriptions/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [newsletter]
+      operationId: retryNewsletterSubscription
+      summary: Re-queue a subscription whose push to Mailchimp failed
+      responses:
+        '200':
+          description: The re-queued subscription
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewsletterSubscription' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /newsletter/stats:
+    get:
+      tags: [newsletter]
+      operationId: getNewsletterStats
+      summary: Subscription counts by status and the eligible → subscribed conversion
+      responses:
+        '200':
+          description: Newsletter statistics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NewsletterStats' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /campaign-analytics/overview:
+    get:
+      tags: [campaign-analytics]
+      operationId: getCampaignOverview
+      summary: Campaign counts, the funnel and the overall metrics for the whole area
+      responses:
+        '200':
+          description: Overview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /campaign-analytics/campaigns/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [campaign-analytics]
+      operationId: getCampaignAnalytics
+      summary: One campaign's metrics beside Instantly's, with the disagreements called out
+      description: |
+        Our numbers and Instantly's are reported side by side and never merged: the two
+        count differently, and `mismatch` treats the gap as a signal rather than
+        hiding it behind an average.
+      parameters:
+        - name: days
+          in: query
+          description: Length of the daily series
+          schema: { type: integer, minimum: 1, maximum: 365, default: 30 }
+      responses:
+        '200':
+          description: Campaign analytics
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CampaignAnalytics' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaign-analytics/campaigns/{id}/variants:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [campaign-analytics]
+      operationId: getCampaignVariantAnalytics
+      summary: How each variant of this campaign performed
+      responses:
+        '200':
+          description: Per-variant metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/VariantAnalytics' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /campaign-analytics/components:
+    get:
+      tags: [campaign-analytics]
+      operationId: getComponentAnalytics
+      summary: How each component performed across the sends that carried it
+      parameters:
+        - name: type
+          in: query
+          schema: { $ref: '#/components/schemas/ComponentType' }
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: since
+          in: query
+          description: Only sends at or after this instant
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Per-component metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ComponentAnalytics' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaign-analytics/sending-accounts:
+    get:
+      tags: [campaign-analytics]
+      operationId: getAccountAnalytics
+      summary: Per-mailbox deliverability, ours beside Instantly's
+      responses:
+        '200':
+          description: Per-account metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AccountAnalytics' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /campaign-analytics/funnel:
+    get:
+      tags: [campaign-analytics]
+      operationId: getFunnelAnalytics
+      summary: The cold → subscriber funnel, optionally for one campaign
+      description: |
+        `current` is how many contacts sit in the stage now; `ever_reached` how many
+        have passed through it. The two differ because a contact only moves forward,
+        so the second is the one to read as a conversion.
+      parameters:
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Funnel steps
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/FunnelStep' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /activity:
+    get:
+      tags: [campaign-analytics]
+      operationId: listActivity
+      summary: The whole contact event log, newest first
+      parameters:
+        - name: type
+          in: query
+          description: Repeatable event type filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/ContactEventType' }
+          style: form
+          explode: true
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: contact_id
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated events
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactEventList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: "Static API key, `Authorization: Bearer <KARVON_API_KEY>`"
+
+  parameters:
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PerPage:
+      name: per_page
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    LeadIdPath:
+      name: leadId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ConsentIdPath:
+      name: consentId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SuppressionIdPath:
+      name: suppressionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WebhookTokenPath:
+      name: token
+      in: path
+      required: true
+      description: The opaque token minted when the webhook was registered
+      schema: { type: string, minLength: 8, maxLength: 200 }
+
+  responses:
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource does not exist
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Action not allowed in the resource's current state
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationFailed:
+      description: Request body or query failed validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: validation_failed }
+            message: { type: string }
+            details:
+              type: array
+              items: { $ref: '#/components/schemas/FieldError' }
+      additionalProperties: false
+
+    FieldError:
+      type: object
+      required: [field, message]
+      properties:
+        field: { type: string }
+        message: { type: string }
+
+    PageMeta:
+      type: object
+      required: [page, per_page, total]
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer, format: int64 }
+
+    Health:
+      type: object
+      required: [ok, db, queue]
+      properties:
+        ok: { type: boolean }
+        db: { type: boolean }
+        queue: { type: boolean }
+        version: { type: string }
+
+    SourceKind:
+      type: string
+      enum: [apify, outscraper, emailable]
+
+    SourceRole:
+      type: string
+      description: |
+        What a source is for. Maps providers supply business listings; the verifier
+        checks email addresses. Both store their key the same way.
+      enum: [maps, verifier]
+
+    Source:
+      type: object
+      required: [id, kind, role, name, has_key, cost_per_1k_cents, enabled, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/SourceKind' }
+        role: { $ref: '#/components/schemas/SourceRole' }
+        name: { type: string }
+        has_key: { type: boolean, description: Whether an API key is stored; the key itself is never returned }
+        cost_per_1k_cents: { type: integer, minimum: 0 }
+        enabled: { type: boolean }
+        last_tested_at: { type: string, format: date-time, nullable: true }
+        last_test_ok: { type: boolean, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    SourceUpdate:
+      type: object
+      properties:
+        api_key:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: Plaintext key; stored AES-GCM encrypted. Omit to keep, null to clear.
+        cost_per_1k_cents: { type: integer, minimum: 0, maximum: 1000000 }
+        enabled: { type: boolean }
+        name: { type: string, minLength: 1, maxLength: 100 }
+      additionalProperties: false
+
+    SourceTestResult:
+      type: object
+      required: [ok, kind]
+      properties:
+        ok: { type: boolean }
+        kind: { $ref: '#/components/schemas/SourceKind' }
+        listings_returned: { type: integer, description: Maps providers only }
+        credits:
+          type: integer
+          format: int64
+          nullable: true
+          description: Remaining balance, returned when testing the email verifier
+        tested_at: { type: string, format: date-time }
+
+    JobStatus:
+      type: string
+      enum: [queued, running, done, failed, cancelled]
+
+    Location:
+      type: object
+      description: >
+        A place to search. Both fields are optional: city + state pins one city,
+        state alone covers the whole state, city alone is resolved by the provider,
+        and an empty object (or an empty locations array) means every US state.
+      properties:
+        city: { type: string, maxLength: 120 }
+        state: { type: string, maxLength: 60 }
+
+    JobConfig:
+      type: object
+      required: [terms]
+      properties:
+        terms:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 120 }
+        locations:
+          type: array
+          description: Omitted or empty means every US state.
+          maxItems: 300
+          items: { $ref: '#/components/schemas/Location' }
+        max_per_query:
+          type: integer
+          minimum: -1
+          maximum: 1000
+          default: 100
+          description: >-
+            Places to fetch per search term per location. -1 means every place in the
+            area, which is how a whole state is covered; spend is then bounded by the
+            provider's per-run charge cap rather than by this number.
+        crawl_emails: { type: boolean, default: true }
+        concurrency: { type: integer, minimum: 1, maximum: 32, default: 8 }
+        recrawl_of:
+          type: string
+          format: uuid
+          readOnly: true
+          description: Set on a re-crawl job; the job whose businesses were copied in.
+      additionalProperties: false
+
+    JobCreate:
+      type: object
+      required: [name, source_id, config]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        source_id: { type: string, format: uuid }
+        config: { $ref: '#/components/schemas/JobConfig' }
+      additionalProperties: false
+
+    JobStats:
+      type: object
+      required: [queries_total, queries_done, listings_found, sites_total, sites_crawled, emails_found, cost_cents]
+      properties:
+        queries_total: { type: integer }
+        queries_done: { type: integer }
+        queries_failed: { type: integer }
+        listings_found: { type: integer }
+        sites_total: { type: integer }
+        sites_crawled: { type: integer }
+        emails_found: { type: integer }
+        duplicates:
+          type: integer
+          description: >-
+            Listings that resolved onto a business the job already had. A run over
+            areas that do not overlap should report close to zero.
+        cost_cents: { type: integer, format: int64 }
+
+    Job:
+      type: object
+      required: [id, name, status, source_id, config, stats, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        source_id: { type: string, format: uuid }
+        source_name: { type: string }
+        source_kind: { $ref: '#/components/schemas/SourceKind' }
+        config: { $ref: '#/components/schemas/JobConfig' }
+        stats: { $ref: '#/components/schemas/JobStats' }
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    JobList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Job' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    JobEstimate:
+      type: object
+      required: [queries, est_listings, est_cost_cents]
+      properties:
+        queries: { type: integer }
+        est_listings: { type: integer }
+        est_cost_cents: { type: integer, format: int64 }
+        cost_per_1k_cents: { type: integer }
+        unlimited:
+          type: boolean
+          description: >-
+            The job asks for every place in each area, so est_listings and
+            est_cost_cents are an assumed ceiling rather than a limit the provider
+            will enforce.
+
+    EmailSource:
+      type: string
+      enum: [mailto, regex, provider]
+
+    BusinessEmail:
+      type: object
+      required: [id, email, source, is_primary, found_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        source: { $ref: '#/components/schemas/EmailSource' }
+        page_url: { type: string, nullable: true }
+        is_primary: { type: boolean }
+        verification_id: { type: string, format: uuid, nullable: true }
+        verified_status:
+          allOf:
+            - $ref: '#/components/schemas/VerificationTag'
+          nullable: true
+        verification_score: { type: integer, nullable: true }
+        typo_suggestion: { type: string, nullable: true }
+        found_at: { type: string, format: date-time }
+
+    Business:
+      type: object
+      required: [id, name, suppressed, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        place_id: { type: string, nullable: true }
+        name: { type: string }
+        category: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        zip: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        domain: { type: string, nullable: true }
+        rating: { type: number, format: double, nullable: true }
+        reviews: { type: integer, nullable: true }
+        lat: { type: number, format: double, nullable: true }
+        lng: { type: number, format: double, nullable: true }
+        suppressed: { type: boolean }
+        notes: { type: string, nullable: true }
+        first_job_id: { type: string, format: uuid, nullable: true }
+        first_job_name: { type: string, nullable: true, description: Name of the job that first found this business, null once that job is deleted }
+        primary_email: { type: string, nullable: true }
+        primary_email_source: { $ref: '#/components/schemas/EmailSource' }
+        primary_email_verified_status:
+          allOf:
+            - $ref: '#/components/schemas/VerificationTag'
+          nullable: true
+          description: Tag of the primary address, null until it has been verified
+        primary_email_verification_score: { type: integer, nullable: true }
+        emails_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BusinessDetail:
+      allOf:
+        - $ref: '#/components/schemas/Business'
+        - type: object
+          properties:
+            emails:
+              type: array
+              items: { $ref: '#/components/schemas/BusinessEmail' }
+            raw:
+              type: object
+              additionalProperties: true
+              nullable: true
+
+    BusinessList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Business' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    BusinessUpdate:
+      type: object
+      properties:
+        suppressed: { type: boolean }
+        notes: { type: string, maxLength: 2000, nullable: true }
+      additionalProperties: false
+
+    BusinessBulkRequest:
+      type: object
+      required: [ids, action]
+      properties:
+        ids:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          items: { type: string, format: uuid }
+        action:
+          type: string
+          enum: [suppress, unsuppress]
+      additionalProperties: false
+
+    BulkResult:
+      type: object
+      required: [updated]
+      properties:
+        updated: { type: integer }
+
+    BusinessExportRequest:
+      type: object
+      properties:
+        job_id: { type: string, format: uuid }
+        category: { type: string, maxLength: 200 }
+        state: { type: string, maxLength: 100 }
+        city: { type: string, maxLength: 200 }
+        has_email: { type: boolean }
+        suppressed: { type: boolean }
+        q: { type: string, maxLength: 200 }
+        email_source: { $ref: '#/components/schemas/EmailSource' }
+        verification_tag:
+          type: array
+          items: { $ref: '#/components/schemas/VerificationTag' }
+        ids:
+          type: array
+          maxItems: 5000
+          items: { type: string, format: uuid }
+          description: When present, exports exactly these rows and ignores the filters
+      additionalProperties: false
+
+    ScraperStatsJobEmails:
+      type: object
+      required: [job_id, name, emails]
+      properties:
+        job_id: { type: string, format: uuid }
+        name: { type: string }
+        emails: { type: integer }
+
+    ScraperStats:
+      type: object
+      required: [businesses, with_email, jobs_total, emails_per_job]
+      properties:
+        businesses: { type: integer, format: int64 }
+        with_email: { type: integer, format: int64 }
+        jobs_total: { type: integer, format: int64 }
+        emails_total: { type: integer, format: int64 }
+        last_job:
+          allOf:
+            - $ref: '#/components/schemas/Job'
+          nullable: true
+        emails_per_job:
+          type: array
+          items: { $ref: '#/components/schemas/ScraperStatsJobEmails' }
+
+    VerificationTag:
+      type: string
+      description: |
+        The colour band a final score falls into. The UI must never convey a tag by
+        colour alone; `tag_label` carries the text that goes with it.
+      enum: [green, light_green, yellow, orange, red]
+
+    Pass2Status:
+      type: string
+      description: |
+        The third-party verdict. Only `deliverable`, `risky` and `undeliverable` are
+        conclusive and billed. `unknown` and `error` leave the free score in place.
+        Whether the address may be tried again is not read from this field but from
+        `third_party_sent_at`: `unknown` came from the provider and is final, while
+        `error` from a call that never reached it leaves the address unsent.
+      enum: [deliverable, risky, unknown, undeliverable, error]
+
+    VerificationPass:
+      type: string
+      description: "`self` is the free local pass; `third_party` is the paid one."
+      enum: [self, third_party]
+
+    VerificationCheckStatus:
+      type: string
+      enum: [pass, fail, skip]
+
+    VerificationCheck:
+      type: object
+      description: One line of the Pass 1 breakdown. The points always sum to pass1_score.
+      required: [key, label, status, points, max]
+      properties:
+        key: { type: string, example: mx }
+        label: { type: string, example: MX records present }
+        status: { $ref: '#/components/schemas/VerificationCheckStatus' }
+        points: { type: integer, description: Points this check actually contributed }
+        max: { type: integer, description: Points it could have contributed }
+        detail: { type: string }
+
+    VerificationBusiness:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+
+    EmailVerification:
+      type: object
+      required: [id, email, domain, pass1_score, free_score, pass2_credits, final_score,
+                 verification_tag, tag_label, business_count, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        domain: { type: string }
+        pass1_score: { type: integer, minimum: 0, maximum: 85 }
+        pass1_hard_fail:
+          type: string
+          nullable: true
+          description: Key of the check that zeroed the score, null when none did
+        pass1_verified_at: { type: string, format: date-time, nullable: true }
+        free_score:
+          type: integer
+          minimum: 0
+          maximum: 89
+          description: |
+            The weighted combination of every free provider. Capped below 90 on
+            purpose: only the paid provider can tag an address Verified.
+        free_scored_at: { type: string, format: date-time, nullable: true }
+        pass2_score: { type: integer, nullable: true }
+        pass2_status:
+          allOf:
+            - $ref: '#/components/schemas/Pass2Status'
+          nullable: true
+        pass2_verified_at: { type: string, format: date-time, nullable: true }
+        third_party_sent_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            When this address was handed to a third-party verifier. Non-null means it
+            has had its one and only send: it can never be sent to a third party
+            again, whatever the provider answered or failed to answer. Null means it
+            has never left our infrastructure.
+        pass2_credits: { type: integer }
+        final_score: { type: integer, minimum: 0, maximum: 100 }
+        verification_tag: { $ref: '#/components/schemas/VerificationTag' }
+        tag_label: { type: string, example: Likely valid }
+        typo_suggestion:
+          type: string
+          nullable: true
+          description: The corrected address, offered to the operator rather than applied
+        last_error: { type: string, nullable: true }
+        business_count: { type: integer }
+        updated_at: { type: string, format: date-time }
+
+    EmailVerificationDetail:
+      allOf:
+        - $ref: '#/components/schemas/EmailVerification'
+        - type: object
+          properties:
+            pass1_checks:
+              type: array
+              items: { $ref: '#/components/schemas/VerificationCheck' }
+            provider_results:
+              type: array
+              description: |
+                How each free provider contributed to free_score. Every weighted
+                provider always appears, including ones that were switched off or
+                could not be reached, so the breakdown is always complete.
+              items: { $ref: '#/components/schemas/VerificationProviderResult' }
+            pass2_raw:
+              type: object
+              additionalProperties: true
+              nullable: true
+            businesses:
+              type: array
+              items: { $ref: '#/components/schemas/VerificationBusiness' }
+
+    EmailVerificationList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/EmailVerification' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    VerificationProviderKey:
+      type: string
+      description: |
+        Which provider produced a result. The list grows as providers are added, so
+        clients must tolerate an unknown value rather than switching exhaustively.
+      example: reacher
+
+    VerificationProviderStatus:
+      type: string
+      description: |
+        What the provider managed to determine. Only `scored` contributes to the
+        weighted score; every other status means the provider's weight was
+        redistributed over the providers that did answer.
+      enum: [scored, inconclusive, skipped, unavailable, error]
+
+    VerificationProviderResult:
+      type: object
+      description: One provider's contribution to the weighted free score.
+      required: [provider, label, status, score, weight, effective_weight, contribution]
+      properties:
+        provider: { $ref: '#/components/schemas/VerificationProviderKey' }
+        label: { type: string, example: Reacher }
+        status: { $ref: '#/components/schemas/VerificationProviderStatus' }
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: The provider's normalised answer; meaningful only when status is `scored`
+        weight:
+          type: integer
+          description: The percentage configured for this provider when the address was scored
+        effective_weight:
+          type: integer
+          description: |
+            The weight after redistributing the share of providers that contributed
+            nothing. Zero for a provider that did not contribute.
+        contribution:
+          type: number
+          format: double
+          description: score × effective_weight ÷ 100. The contributions sum to free_score before the cap.
+        reason: { type: string }
+        disqualifying:
+          type: boolean
+          description: |
+            This provider found a fact no other provider's opinion can override — bad
+            syntax, a disposable domain, an automated mailbox, a domain that accepts
+            no mail. The free score is 0 and no provider contributed.
+        error: { type: string }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Small structured detail the provider kept; never a raw vendor payload
+        duration_ms: { type: integer, format: int64 }
+
+    VerificationProviderHealth:
+      type: object
+      required: [provider, label, stage, weighted, toggleable, description, enabled, weight]
+      properties:
+        provider: { $ref: '#/components/schemas/VerificationProviderKey' }
+        label: { type: string }
+        stage:
+          type: string
+          enum: [free, paid]
+          description: '`free` providers are weighted together; `paid` runs afterwards and costs credits'
+        weighted: { type: boolean, description: Whether it takes part in the weighted score }
+        toggleable: { type: boolean, description: Whether it can be switched off }
+        description: { type: string }
+        enabled: { type: boolean }
+        weight: { type: integer, description: The configured percentage; 0 for the paid provider }
+        healthy:
+          type: boolean
+          nullable: true
+          description: |
+            null when readiness cannot be determined, which is the case for providers
+            that need no probing. Render that as "not applicable", never as healthy.
+        error: { type: string, description: Why the readiness probe failed }
+
+    VerificationSettings:
+      type: object
+      required: [weights, enabled, paid_enabled, paid_threshold, paid_min_score]
+      properties:
+        weights:
+          type: object
+          additionalProperties: { type: integer, minimum: 0, maximum: 100 }
+          description: Percentage per weighted provider, keyed by provider. Must total 100.
+          example: { existing: 30, mailchecker: 20, reacher: 50 }
+        enabled:
+          type: object
+          additionalProperties: { type: boolean }
+          description: Which toggleable providers are switched on, keyed by provider
+          example: { mailchecker: true, reacher: false, paid: true }
+        paid_enabled:
+          type: boolean
+          description: Switches the paid stage off entirely
+        paid_threshold:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: |
+            The ceiling, exclusive. An address whose free score reaches it is already
+            confident enough and is never billed.
+        paid_min_score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: |
+            The floor, inclusive. An address below it is never billed, because a paid
+            provider would only confirm what the free checks already established.
+
+    VerificationSettingsUpdate:
+      allOf:
+        - $ref: '#/components/schemas/VerificationSettings'
+      description: The full settings object; every field is replaced.
+
+    VerificationSettingsView:
+      type: object
+      required: [settings, providers, free_max_score, weight_total]
+      properties:
+        settings: { $ref: '#/components/schemas/VerificationSettings' }
+        providers:
+          type: array
+          description: The provider catalogue with current settings and live readiness
+          items: { $ref: '#/components/schemas/VerificationProviderHealth' }
+        free_max_score:
+          type: integer
+          description: |
+            The ceiling on the weighted free score. Below the Verified band on
+            purpose, so the UI can explain why three perfect free scores do not
+            produce 100.
+        weight_total:
+          type: integer
+          description: What the weights must add up to, so the client can validate before submitting
+        updated_at: { type: string, format: date-time, nullable: true }
+
+    VerificationRunFilter:
+      type: object
+      description: Which addresses a run covers. Stored verbatim on the run.
+      properties:
+        scope:
+          type: string
+          default: all
+          enum: [all, selection]
+        ids:
+          type: array
+          maxItems: 5000
+          items: { type: string, format: uuid }
+        business_ids:
+          type: array
+          maxItems: 5000
+          items: { type: string, format: uuid }
+        job_id: { type: string, format: uuid }
+        tags:
+          type: array
+          items: { $ref: '#/components/schemas/VerificationTag' }
+        min_score: { type: integer, minimum: 0, maximum: 100 }
+        include_suppressed: { type: boolean, default: false }
+        stale_after_days:
+          type: integer
+          minimum: 0
+          description: Self runs only; skips addresses scored more recently than this
+      additionalProperties: false
+
+    VerificationRunEstimateRequest:
+      type: object
+      required: [pass]
+      properties:
+        pass: { $ref: '#/components/schemas/VerificationPass' }
+        filter: { $ref: '#/components/schemas/VerificationRunFilter' }
+      additionalProperties: false
+
+    VerificationRunEstimate:
+      type: object
+      required: [emails, needs_self, cached, credits_needed, est_cost_cents]
+      properties:
+        emails:
+          type: integer
+          format: int64
+          description: How many addresses the run would actually process
+        needs_self:
+          type: integer
+          format: int64
+          description: Matching addresses excluded because they have not been through the free checks
+        cached:
+          type: integer
+          format: int64
+          description: |
+            Matching addresses skipped because they have already been sent to a
+            third party once. They are skipped permanently and are never billed.
+        credits_needed: { type: integer, format: int64 }
+        cost_per_1k_cents: { type: integer }
+        est_cost_cents: { type: integer, format: int64 }
+        balance_credits:
+          type: integer
+          format: int64
+          nullable: true
+          description: The provider's reported balance, null when it cannot be reached
+
+    VerificationRunCreate:
+      type: object
+      required: [pass]
+      properties:
+        pass: { $ref: '#/components/schemas/VerificationPass' }
+        filter: { $ref: '#/components/schemas/VerificationRunFilter' }
+        max_cost_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          description: |
+            Required for a third_party run. Send the estimate you displayed; the
+            server re-estimates and refuses if the real cost exceeds it.
+      additionalProperties: false
+
+    VerificationRun:
+      type: object
+      required: [id, pass, status, filter, total, done, failed, skipped, credits_used,
+                 est_cost_cents, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        pass: { $ref: '#/components/schemas/VerificationPass' }
+        status: { $ref: '#/components/schemas/JobStatus' }
+        filter: { $ref: '#/components/schemas/VerificationRunFilter' }
+        total: { type: integer }
+        done: { type: integer }
+        failed: { type: integer }
+        skipped:
+          type: integer
+          description: |
+            Addresses that had already been sent to a third party, were below the
+            gate, or no longer exist
+        credits_used: { type: integer }
+        est_cost_cents: { type: integer, format: int64 }
+        source_id: { type: string, format: uuid, nullable: true }
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    VerificationRunList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/VerificationRun' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    VerificationTagCounts:
+      type: object
+      required: [green, light_green, yellow, orange, red]
+      properties:
+        green: { type: integer, format: int64 }
+        light_green: { type: integer, format: int64 }
+        yellow: { type: integer, format: int64 }
+        orange: { type: integer, format: int64 }
+        red: { type: integer, format: int64 }
+
+    VerificationStats:
+      type: object
+      required: [total, by_tag, self_verified, third_party_verified, needs_self,
+                 qualifying_for_third_party, qualifying_est_cost_cents,
+                 credits_used_total, credits_used_30d, active_runs]
+      properties:
+        total: { type: integer, format: int64 }
+        by_tag: { $ref: '#/components/schemas/VerificationTagCounts' }
+        self_verified: { type: integer, format: int64 }
+        third_party_verified: { type: integer, format: int64 }
+        needs_self:
+          type: integer
+          format: int64
+          description: Addresses on the master list that have never completed Pass 1
+        qualifying_for_third_party:
+          type: integer
+          format: int64
+          description: Addresses that would be sent, and billed for, by a paid run today
+        qualifying_est_cost_cents: { type: integer, format: int64 }
+        credits_used_total: { type: integer, format: int64 }
+        credits_used_30d: { type: integer, format: int64 }
+        balance_credits: { type: integer, format: int64, nullable: true }
+        active_runs: { type: integer, format: int64 }
+        last_self_run_at: { type: string, format: date-time, nullable: true }
+        last_third_party_run_at: { type: string, format: date-time, nullable: true }
+
+    SSEProgress:
+      type: object
+      description: Payload of an SSE `progress` event
+      properties:
+        queries_done: { type: integer }
+        queries_total: { type: integer }
+        sites_crawled: { type: integer }
+        sites_total: { type: integer }
+        listings_found: { type: integer }
+        emails_found: { type: integer }
+        cost_cents: { type: integer, format: int64 }
+
+    SSELog:
+      type: object
+      description: Payload of an SSE `log` event
+      required: [level, msg, ts]
+      properties:
+        level: { type: string, enum: [debug, info, warn, error] }
+        msg: { type: string }
+        ts: { type: string, format: date-time }
+
+    SSEStatus:
+      type: object
+      description: Payload of an SSE `status` event
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/JobStatus' }
+        error: { type: string, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    CampaignStatus:
+      type: string
+      description: |
+        A campaign's own state. `launching` is the window in which leads are being
+        pushed to Instantly; it is transient and ends in `active` or `failed`.
+      enum: [draft, ready, launching, active, paused, completed, failed, archived]
+
+    CampaignLeadStatus:
+      type: string
+      description: The delivery state of one contact inside one campaign.
+      enum: [pending, pushing, active, paused, completed, replied, bounced,
+             unsubscribed, skipped, suppressed, failed]
+
+    CampaignVariantStatus:
+      type: string
+      description: Whether a variant is still being handed out on this campaign.
+      enum: [active, paused]
+
+    ContactStage:
+      type: string
+      description: |
+        A contact's position in the cold → subscriber funnel. The first eleven are the
+        funnel proper and a contact only ever moves forward through them; the last six
+        are terminal, outrank every funnel stage, and only `unsubscribed` can replace
+        another terminal.
+      enum: [cold, queued_for_instantly, contacted, engaged, replied, interested,
+             permission_requested, permission_captured, newsletter_eligible,
+             mailchimp_pending, mailchimp_subscribed,
+             not_interested, wrong_person, do_not_contact, invalid_email, bounced, unsubscribed]
+
+    ContactSource:
+      type: string
+      description: How a contact first entered the system.
+      enum: [business_import, csv, manual]
+
+    SuppressionReason:
+      type: string
+      description: |
+        Why a contact is not to be contacted. `unsubscribed`, `bounced` and
+        `invalid_email` are permanent and can never be lifted; the other three are
+        operator judgements and can be.
+      enum: [unsubscribed, bounced, invalid_email, do_not_contact, not_interested, wrong_person]
+
+    SuppressionSource:
+      type: string
+      description: What wrote a suppression.
+      enum: [instantly_webhook, mailchimp_webhook, reconcile, manual, import]
+
+    ConsentSource:
+      type: string
+      description: How newsletter permission was captured.
+      enum: [explicit_reply, form, verbal_confirmed]
+
+    ComponentType:
+      type: string
+      description: |
+        The slots an email is assembled from, in assembly order. `subject` is its own
+        line; the rest are joined with blank lines.
+      enum: [subject, hook, problem, value_prop, proof, cta, closing, ps]
+
+    ContentStatus:
+      type: string
+      description: |
+        The review state of a component or variant: draft → reviewed → approved →
+        active, with AI output entering at `ai_generated`. Only `approved` and
+        `active` content may go into a live campaign.
+      enum: [draft, ai_generated, reviewed, approved, active, archived]
+
+    SubscriptionStatus:
+      type: string
+      description: |
+        What Mailchimp says about a subscription. `local_pending` is ours: the row
+        exists here but has not been pushed yet.
+      enum: [local_pending, pending, subscribed, unsubscribed, cleaned, transactional,
+             archived, compliance_blocked, error]
+
+    RequestedSubscriptionStatus:
+      type: string
+      description: What we asked Mailchimp for, which the audience's opt-in policy decides.
+      enum: [pending, subscribed, unsubscribed]
+
+    SyncStatus:
+      type: string
+      description: How far a subscription has got in being pushed to Mailchimp.
+      enum: [queued, syncing, synced, failed]
+
+    ContactEventType:
+      type: string
+      description: One per thing that can appear on a contact's timeline.
+      enum: [imported, queued, pushed, push_failed, sent, opened, clicked, replied,
+             auto_replied, interested, not_interested, wrong_person, meeting_booked,
+             bounced, unsubscribed, skipped, suppressed, suppression_lifted,
+             permission_requested, consent_captured, consent_revoked,
+             newsletter_eligible, newsletter_pushed, newsletter_pending,
+             newsletter_subscribed, newsletter_unsubscribed, newsletter_cleaned,
+             newsletter_profile_updated, stage_changed, note]
+
+    ContactEventSource:
+      type: string
+      description: What put an event on the timeline.
+      enum: [instantly_webhook, mailchimp_webhook, reconcile, manual, system, import]
+
+    ReplyClassification:
+      type: string
+      enum: [positive, negative, neutral, auto_reply, out_of_office, unknown]
+
+    SendSource:
+      type: string
+      description: Whether a send row was learnt from a webhook or from reconciliation.
+      enum: [webhook, reconcile]
+
+    ProviderName:
+      type: string
+      description: Instantly sends the cold email; Mailchimp sends the newsletter.
+      enum: [instantly, mailchimp]
+
+    ProviderEventSource:
+      type: string
+      enum: [webhook, replay, test]
+
+    SyncRunKind:
+      type: string
+      enum: [instantly_campaign, instantly_campaigns_all, instantly_leads_full,
+             instantly_accounts, instantly_webhook_replay, mailchimp_members,
+             mailchimp_audiences]
+
+    SyncRunStatus:
+      type: string
+      enum: [running, done, failed]
+
+    AIProviderName:
+      type: string
+      enum: [manual_chatgpt, openai_api]
+
+    AIMode:
+      type: string
+      description: |
+        `manual` means the operator carries the prompt to ChatGPT and pastes the answer
+        back; `api` means the server makes the call itself.
+      enum: [manual, api]
+
+    GenerationStatus:
+      type: string
+      enum: [prompt_built, awaiting_paste, parsed, imported, failed]
+
+    Metrics:
+      type: object
+      description: |
+        One bucket of send-level counts and the rates derived from them. Every rate is
+        over `sends`, except `unsubscribe_rate`, which is over `unique_contacts`
+        because a person unsubscribes once however many emails reached them.
+      required: [sends, unique_contacts, opened, clicked, replied, positive_replies,
+                 bounced, unsubscribed, open_rate, click_rate, reply_rate,
+                 positive_reply_rate, bounce_rate, unsubscribe_rate]
+      properties:
+        sends: { type: integer, format: int64 }
+        unique_contacts: { type: integer, format: int64 }
+        opened: { type: integer, format: int64 }
+        clicked: { type: integer, format: int64 }
+        replied: { type: integer, format: int64 }
+        positive_replies: { type: integer, format: int64 }
+        bounced: { type: integer, format: int64 }
+        unsubscribed: { type: integer, format: int64 }
+        open_rate: { type: number, format: double }
+        click_rate: { type: number, format: double }
+        reply_rate: { type: number, format: double }
+        positive_reply_rate: { type: number, format: double }
+        bounce_rate: { type: number, format: double }
+        unsubscribe_rate: { type: number, format: double }
+
+    CountsByKey:
+      type: object
+      description: Counts keyed by a status, stage or other discriminator.
+      additionalProperties: { type: integer, format: int64 }
+
+    Campaign:
+      type: object
+      required: [id, name, status, steps, weights_version, leads_total, leads_pushed,
+                 contacted, replied, interested, bounced, unsubscribed, sends_total,
+                 sends_bounced, eligible, subscribed, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { $ref: '#/components/schemas/CampaignStatus' }
+        brief:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: The free-form brief the AI generator is given
+        schedule:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Sending window and timezone, as Instantly understands them
+        settings:
+          type: object
+          additionalProperties: true
+          nullable: true
+        steps: { type: integer, minimum: 1, maximum: 5 }
+        step_delays:
+          type: array
+          nullable: true
+          description: Days to wait before each follow-up step
+          items: { type: integer }
+        weights_version:
+          type: integer
+          description: |
+            Bumped whenever the variant mix changes. An assignment records the version
+            it was made under, so a re-weighting never rewrites an email already sent.
+        instantly_campaign_id: { type: string, nullable: true }
+        instantly_status: { type: integer, nullable: true }
+        instantly_sending_status: { type: string, nullable: true }
+        launched_at: { type: string, format: date-time, nullable: true }
+        paused_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        archived_at: { type: string, format: date-time, nullable: true }
+        last_synced_at: { type: string, format: date-time, nullable: true }
+        last_sync_error: { type: string, nullable: true }
+        error: { type: string, nullable: true }
+        leads_total: { type: integer }
+        leads_pushed: { type: integer }
+        contacted: { type: integer, format: int64 }
+        replied: { type: integer, format: int64 }
+        interested: { type: integer, format: int64 }
+        bounced: { type: integer, format: int64 }
+        unsubscribed: { type: integer, format: int64 }
+        sends_total: { type: integer, format: int64 }
+        sends_bounced: { type: integer, format: int64 }
+        eligible:
+          type: integer
+          format: int64
+          description: Leads whose contact has reached a newsletter stage
+        subscribed: { type: integer, format: int64 }
+        last_activity_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CampaignSummary:
+      type: object
+      description: Just enough of a campaign to name it in another resource's response.
+      required: [id, name, status]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { $ref: '#/components/schemas/CampaignStatus' }
+
+    CampaignDetail:
+      allOf:
+        - $ref: '#/components/schemas/Campaign'
+        - type: object
+          required: [sending_accounts, variants, lead_counts, stage_counts, checklist]
+          properties:
+            sending_accounts:
+              type: array
+              items: { $ref: '#/components/schemas/SendingAccount' }
+            variants:
+              type: array
+              items: { $ref: '#/components/schemas/CampaignVariant' }
+            lead_counts: { $ref: '#/components/schemas/CountsByKey' }
+            stage_counts: { $ref: '#/components/schemas/CountsByKey' }
+            checklist: { $ref: '#/components/schemas/CampaignChecklist' }
+
+    CampaignList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Campaign' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    CampaignCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        brief: { type: object, additionalProperties: true }
+        schedule: { type: object, additionalProperties: true }
+        settings: { type: object, additionalProperties: true }
+        steps: { type: integer, minimum: 1, maximum: 5 }
+        step_delays:
+          type: array
+          maxItems: 5
+          items: { type: integer, minimum: 0, maximum: 365 }
+      additionalProperties: false
+
+    CampaignUpdate:
+      type: object
+      description: Every field is optional; omitted fields are left as they are.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        brief: { type: object, additionalProperties: true }
+        schedule: { type: object, additionalProperties: true }
+        settings: { type: object, additionalProperties: true }
+        steps: { type: integer, minimum: 1, maximum: 5 }
+        step_delays:
+          type: array
+          maxItems: 5
+          items: { type: integer, minimum: 0, maximum: 365 }
+      additionalProperties: false
+
+    ChecklistItem:
+      type: object
+      description: |
+        One pre-launch condition. A failing item that is not `blocking` is a warning:
+        the campaign can still launch with it unresolved.
+      required: [key, ok, blocking, message]
+      properties:
+        key: { type: string, example: variants }
+        ok: { type: boolean }
+        blocking: { type: boolean }
+        message: { type: string }
+
+    CampaignChecklist:
+      type: object
+      required: [ready, items]
+      properties:
+        ready: { type: boolean, description: True when no blocking item is failing }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ChecklistItem' }
+
+    CampaignSendingAccountsRequest:
+      type: object
+      required: [sending_account_ids]
+      properties:
+        sending_account_ids:
+          type: array
+          maxItems: 200
+          items: { type: string, format: uuid }
+      additionalProperties: false
+
+    CampaignVariant:
+      type: object
+      description: One variant attached to a campaign at one step, with its weight.
+      required: [campaign_id, variant_id, step, weight, assignment_status, attached_at,
+                 name, variant_status, subject_template, body_template]
+      properties:
+        campaign_id: { type: string, format: uuid }
+        variant_id: { type: string, format: uuid }
+        step: { type: integer, minimum: 1, maximum: 5 }
+        weight: { type: integer, minimum: 0 }
+        assignment_status: { $ref: '#/components/schemas/CampaignVariantStatus' }
+        attached_at: { type: string, format: date-time }
+        name: { type: string }
+        variant_status: { $ref: '#/components/schemas/ContentStatus' }
+        subject_template: { type: string }
+        body_template: { type: string }
+        component_ids:
+          type: array
+          items: { type: string, format: uuid }
+
+    CampaignVariantWeight:
+      type: object
+      required: [variant_id, step, weight]
+      properties:
+        variant_id: { type: string, format: uuid }
+        step: { type: integer, minimum: 1, maximum: 5 }
+        weight: { type: integer, minimum: 0, maximum: 1000 }
+        status: { $ref: '#/components/schemas/CampaignVariantStatus' }
+      additionalProperties: false
+
+    CampaignVariantsRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/CampaignVariantWeight' }
+      additionalProperties: false
+
+    CampaignLeadBase:
+      type: object
+      description: One campaign lead, without the joined contact columns.
+      required: [id, campaign_id, contact_id, status, push_attempts, open_count,
+                 click_count, reply_count, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        campaign_id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        business_id: { type: string, format: uuid, nullable: true }
+        status: { $ref: '#/components/schemas/CampaignLeadStatus' }
+        instantly_lead_id: { type: string, nullable: true }
+        instantly_status: { type: integer, nullable: true }
+        interest_status: { type: integer, nullable: true }
+        interest_label: { type: string, nullable: true }
+        pushed_at: { type: string, format: date-time, nullable: true }
+        push_attempts: { type: integer }
+        last_push_error: { type: string, nullable: true }
+        last_contacted_at: { type: string, format: date-time, nullable: true }
+        last_opened_at: { type: string, format: date-time, nullable: true }
+        last_clicked_at: { type: string, format: date-time, nullable: true }
+        last_replied_at: { type: string, format: date-time, nullable: true }
+        open_count: { type: integer }
+        click_count: { type: integer }
+        reply_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CampaignLead:
+      allOf:
+        - $ref: '#/components/schemas/CampaignLeadBase'
+        - type: object
+          required: [email, lifecycle_stage, variant_names, sends_total]
+          properties:
+            email: { type: string }
+            first_name: { type: string, nullable: true }
+            last_name: { type: string, nullable: true }
+            company: { type: string, nullable: true }
+            title: { type: string, nullable: true }
+            lifecycle_stage: { $ref: '#/components/schemas/ContactStage' }
+            suppressed_at: { type: string, format: date-time, nullable: true }
+            variant_names:
+              type: array
+              description: The variants assigned to this lead, in step order
+              items: { type: string }
+            sends_total: { type: integer, format: int64 }
+
+    CampaignLeadDetail:
+      allOf:
+        - $ref: '#/components/schemas/CampaignLead'
+        - type: object
+          required: [contact, assignments, sends, events]
+          properties:
+            contact: { $ref: '#/components/schemas/Contact' }
+            assignments:
+              type: array
+              items: { $ref: '#/components/schemas/VariantAssignment' }
+            sends:
+              type: array
+              items: { $ref: '#/components/schemas/EmailSend' }
+            events:
+              type: array
+              items: { $ref: '#/components/schemas/ContactEvent' }
+
+    CampaignLeadList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/CampaignLead' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    LeadImportFilter:
+      type: object
+      description: Which scraped addresses to bring into the campaign as contacts.
+      properties:
+        verification_tag:
+          type: array
+          items: { $ref: '#/components/schemas/VerificationTag' }
+        state: { type: string, maxLength: 100 }
+        city: { type: string, maxLength: 200 }
+        category: { type: string, maxLength: 200 }
+        job_id: { type: string, format: uuid }
+        business_ids:
+          type: array
+          maxItems: 5000
+          items: { type: string, format: uuid }
+        primary_only:
+          type: boolean
+          default: true
+          description: |
+            Keeps only each business's primary address. Turn it off to treat every
+            address a business holds as a candidate.
+      additionalProperties: false
+
+    LeadImportRequest:
+      type: object
+      required: [filter]
+      properties:
+        filter: { $ref: '#/components/schemas/LeadImportFilter' }
+      additionalProperties: false
+
+    LeadImportResult:
+      type: object
+      description: |
+        `matched` is what the filter found; the rest is what became of it. The skip
+        counts are reported rather than refused so an import is never silently partial.
+      required: [matched, imported, skipped_suppressed, skipped_existing, skipped_invalid, capped]
+      properties:
+        matched: { type: integer, format: int64 }
+        imported: { type: integer }
+        skipped_suppressed: { type: integer }
+        skipped_existing: { type: integer }
+        skipped_invalid: { type: integer }
+        capped:
+          type: boolean
+          description: True when the match exceeded the per-import ceiling and was cut short
+
+    Contact:
+      type: object
+      required: [id, email, domain, source, lifecycle_stage, stage_changed_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        domain: { type: string }
+        first_name: { type: string, nullable: true }
+        last_name: { type: string, nullable: true }
+        company: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        business_id: { type: string, format: uuid, nullable: true }
+        source: { $ref: '#/components/schemas/ContactSource' }
+        lifecycle_stage: { $ref: '#/components/schemas/ContactStage' }
+        stage_changed_at: { type: string, format: date-time }
+        suppressed_at: { type: string, format: date-time, nullable: true }
+        suppression_reason:
+          allOf:
+            - $ref: '#/components/schemas/SuppressionReason'
+          nullable: true
+        attributes:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Merge fields carried into the rendered email
+        last_event_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        has_consent:
+          type: boolean
+          description: Whether an un-revoked consent record exists; absent on nested contacts
+        campaign_count: { type: integer, format: int64 }
+        subscription_count: { type: integer, format: int64 }
+
+    ContactCampaignLead:
+      type: object
+      required: [lead, campaign]
+      properties:
+        lead: { $ref: '#/components/schemas/CampaignLeadBase' }
+        campaign: { $ref: '#/components/schemas/CampaignSummary' }
+
+    ContactDetail:
+      allOf:
+        - $ref: '#/components/schemas/Contact'
+        - type: object
+          required: [leads, consents, suppressions, subscriptions]
+          properties:
+            leads:
+              type: array
+              items: { $ref: '#/components/schemas/ContactCampaignLead' }
+            consents:
+              type: array
+              items: { $ref: '#/components/schemas/Consent' }
+            suppressions:
+              type: array
+              items: { $ref: '#/components/schemas/Suppression' }
+            subscriptions:
+              type: array
+              items: { $ref: '#/components/schemas/NewsletterSubscription' }
+
+    ContactList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Contact' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    ContactUpdate:
+      type: object
+      description: The address is not editable; every other profile field is.
+      properties:
+        first_name: { type: string, maxLength: 120, nullable: true }
+        last_name: { type: string, maxLength: 120, nullable: true }
+        company: { type: string, maxLength: 200, nullable: true }
+        title: { type: string, maxLength: 200, nullable: true }
+        phone: { type: string, maxLength: 60, nullable: true }
+        website: { type: string, maxLength: 500, nullable: true }
+        attributes: { type: object, additionalProperties: true }
+      additionalProperties: false
+
+    PermissionRequest:
+      type: object
+      properties:
+        note: { type: string, maxLength: 2000 }
+      additionalProperties: false
+
+    Consent:
+      type: object
+      description: |
+        One captured permission. The record is never deleted: a revocation stamps it
+        rather than removing it, so the audit trail stays complete.
+      required: [id, contact_id, source, captured_at, evidence, captured_by, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        source: { $ref: '#/components/schemas/ConsentSource' }
+        captured_at: { type: string, format: date-time }
+        evidence: { type: string, description: What was actually said, quoted verbatim }
+        captured_by: { type: string, description: The operator answering for this record }
+        campaign_lead_id: { type: string, format: uuid, nullable: true }
+        provider_event_id: { type: string, format: uuid, nullable: true }
+        revoked_at: { type: string, format: date-time, nullable: true }
+        revoke_reason: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    ConsentCreate:
+      type: object
+      required: [source, evidence, captured_by]
+      properties:
+        source: { $ref: '#/components/schemas/ConsentSource' }
+        captured_at:
+          type: string
+          format: date-time
+          description: When permission was actually given; defaults to now
+        evidence: { type: string, minLength: 1, maxLength: 4000 }
+        captured_by: { type: string, minLength: 1, maxLength: 200 }
+        campaign_lead_id: { type: string, format: uuid }
+      additionalProperties: false
+
+    ConsentRevokeRequest:
+      type: object
+      properties:
+        reason: { type: string, maxLength: 2000 }
+      additionalProperties: false
+
+    Suppression:
+      type: object
+      required: [id, contact_id, reason, source, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        reason: { $ref: '#/components/schemas/SuppressionReason' }
+        source: { $ref: '#/components/schemas/SuppressionSource' }
+        note: { type: string, nullable: true }
+        campaign_lead_id: { type: string, format: uuid, nullable: true }
+        provider_event_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        lifted_at: { type: string, format: date-time, nullable: true }
+        lifted_note: { type: string, nullable: true }
+
+    SuppressRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          description: |
+            Only the reversible reasons can be applied by hand; the permanent ones come
+            from the provider webhooks.
+          enum: [do_not_contact, not_interested, wrong_person, unsubscribed]
+        note: { type: string, maxLength: 2000 }
+      additionalProperties: false
+
+    SuppressionLiftRequest:
+      type: object
+      required: [note]
+      properties:
+        note:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Why the suppression is being lifted; kept on the record
+      additionalProperties: false
+
+    EmailComponent:
+      type: object
+      required: [id, type, name, body, status, tags, language, placeholders, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        type: { $ref: '#/components/schemas/ComponentType' }
+        name: { type: string }
+        body: { type: string }
+        status: { $ref: '#/components/schemas/ContentStatus' }
+        tags:
+          type: array
+          items: { type: string }
+        language: { type: string, example: en }
+        ai_generation_id: { type: string, format: uuid, nullable: true }
+        placeholders:
+          type: array
+          description: The merge fields this body needs, extracted when it was saved
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { type: string, format: date-time, nullable: true }
+
+    EmailComponentList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/EmailComponent' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    ComponentCreate:
+      type: object
+      required: [type, name, body]
+      properties:
+        type: { $ref: '#/components/schemas/ComponentType' }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        body: { type: string, minLength: 1, maxLength: 5000 }
+        tags:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 60 }
+        language: { type: string, minLength: 2, maxLength: 10 }
+        status:
+          type: string
+          description: Where the component enters the review flow; defaults to draft
+          enum: [draft, ai_generated]
+      additionalProperties: false
+
+    ComponentUpdate:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        body: { type: string, minLength: 1, maxLength: 5000 }
+        tags:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 60 }
+        language: { type: string, minLength: 2, maxLength: 10 }
+      additionalProperties: false
+
+    ContentStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/ContentStatus' }
+      additionalProperties: false
+
+    ComponentUsage:
+      type: object
+      description: |
+        What depends on a component. `locked_assignments` is the count that matters:
+        while it is above zero the body is frozen, because those emails have gone out.
+      required: [variants, campaigns, locked_assignments]
+      properties:
+        variants:
+          type: array
+          items: { $ref: '#/components/schemas/EmailVariant' }
+        campaigns:
+          type: array
+          items: { $ref: '#/components/schemas/CampaignSummary' }
+        locked_assignments: { type: integer, format: int64 }
+
+    EmailVariant:
+      type: object
+      required: [id, name, step, status, subject_template, body_template, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        step: { type: integer, minimum: 1, maximum: 5 }
+        status: { $ref: '#/components/schemas/ContentStatus' }
+        subject_template: { type: string }
+        body_template: { type: string }
+        component_ids:
+          type: array
+          items: { type: string, format: uuid }
+        ai_generation_id: { type: string, format: uuid, nullable: true }
+        notes: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        archived_at: { type: string, format: date-time, nullable: true }
+
+    EmailVariantComponent:
+      allOf:
+        - $ref: '#/components/schemas/EmailComponent'
+        - type: object
+          required: [position, slot]
+          properties:
+            position: { type: integer }
+            slot: { $ref: '#/components/schemas/ComponentType' }
+
+    EmailVariantDetail:
+      allOf:
+        - $ref: '#/components/schemas/EmailVariant'
+        - type: object
+          required: [components, campaigns]
+          properties:
+            components:
+              type: array
+              description: The slots this variant is assembled from, in assembly order
+              items: { $ref: '#/components/schemas/EmailVariantComponent' }
+            campaigns:
+              type: array
+              items: { $ref: '#/components/schemas/CampaignSummary' }
+
+    EmailVariantList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/EmailVariant' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    VariantSlot:
+      type: object
+      required: [slot, component_id]
+      properties:
+        slot: { $ref: '#/components/schemas/ComponentType' }
+        component_id: { type: string, format: uuid }
+      additionalProperties: false
+
+    VariantCreate:
+      type: object
+      required: [name, components]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        step: { type: integer, minimum: 1, maximum: 5 }
+        components:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items: { $ref: '#/components/schemas/VariantSlot' }
+        notes: { type: string, maxLength: 2000 }
+      additionalProperties: false
+
+    VariantUpdate:
+      type: object
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        step: { type: integer, minimum: 1, maximum: 5 }
+        components:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items: { $ref: '#/components/schemas/VariantSlot' }
+        notes: { type: string, maxLength: 2000, nullable: true }
+      additionalProperties: false
+
+    VariantPreviewRequest:
+      type: object
+      properties:
+        contact_id:
+          type: string
+          format: uuid
+          description: Render against this contact's real merge fields; omit for samples
+      additionalProperties: false
+
+    ComponentPreviewRequest:
+      type: object
+      required: [components]
+      properties:
+        components:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items: { $ref: '#/components/schemas/VariantSlot' }
+        contact_id: { type: string, format: uuid }
+      additionalProperties: false
+
+    EmailPreview:
+      type: object
+      required: [subject, body_text, body_html, placeholders]
+      properties:
+        subject: { type: string }
+        body_text: { type: string }
+        body_html: { type: string }
+        placeholders:
+          type: array
+          description: Every merge field the rendered email referenced
+          items: { type: string }
+
+    AIProvider:
+      type: object
+      required: [provider, mode, label]
+      properties:
+        provider: { $ref: '#/components/schemas/AIProviderName' }
+        mode: { $ref: '#/components/schemas/AIMode' }
+        model: { type: string, nullable: true, description: Null for the manual provider }
+        label: { type: string, example: ChatGPT (manual) }
+
+    AIBrief:
+      type: object
+      description: Everything the generator is told about the campaign.
+      properties:
+        campaign_goal: { type: string, maxLength: 2000 }
+        company: { type: string, maxLength: 200 }
+        product: { type: string, maxLength: 500 }
+        target_industry: { type: string, maxLength: 200 }
+        target_job_title: { type: string, maxLength: 200 }
+        target_company_size: { type: string, maxLength: 100 }
+        pain_points:
+          type: array
+          maxItems: 20
+          items: { type: string, maxLength: 500 }
+        value_proposition: { type: string, maxLength: 2000 }
+        desired_cta: { type: string, maxLength: 500 }
+        tone: { type: string, maxLength: 100 }
+        language: { type: string, maxLength: 10 }
+        additional_context: { type: string, maxLength: 4000 }
+        subject_count: { type: integer, minimum: 0, maximum: 50, description: Zero means the default }
+        hook_count: { type: integer, minimum: 0, maximum: 50 }
+        body_count: { type: integer, minimum: 0, maximum: 50 }
+        cta_count: { type: integer, minimum: 0, maximum: 50 }
+        variant_count: { type: integer, minimum: 0, maximum: 50 }
+      additionalProperties: false
+
+    AIOutputComponent:
+      type: object
+      required: [type, name, body]
+      properties:
+        type: { $ref: '#/components/schemas/ComponentType' }
+        name: { type: string }
+        body: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+
+    AIOutputVariant:
+      type: object
+      description: |
+        A variant the model proposed, pointing at `components` by index. Only the
+        subject is required; a slot the model left out is null.
+      required: [name, subject]
+      properties:
+        name: { type: string }
+        subject: { type: integer }
+        hook: { type: integer, nullable: true }
+        problem: { type: integer, nullable: true }
+        value_prop: { type: integer, nullable: true }
+        proof: { type: integer, nullable: true }
+        cta: { type: integer, nullable: true }
+        closing: { type: integer, nullable: true }
+        ps: { type: integer, nullable: true }
+
+    AIOutput:
+      type: object
+      required: [components, variants]
+      properties:
+        components:
+          type: array
+          items: { $ref: '#/components/schemas/AIOutputComponent' }
+        variants:
+          type: array
+          items: { $ref: '#/components/schemas/AIOutputVariant' }
+        warnings:
+          type: array
+          description: Non-fatal problems found while parsing, such as a variant dropped for a bad index
+          items: { type: string }
+
+    AIGeneration:
+      type: object
+      required: [id, provider, status, brief, prompt, prompt_version,
+                 component_count, variant_count, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        provider: { $ref: '#/components/schemas/AIProviderName' }
+        model: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/GenerationStatus' }
+        campaign_id: { type: string, format: uuid, nullable: true }
+        brief: { $ref: '#/components/schemas/AIBrief' }
+        prompt: { type: string, description: The block the operator pastes into ChatGPT }
+        prompt_version:
+          type: string
+          example: 2026-09-v1
+          description: Stamped on every generation so a later prompt change is visible in the analytics
+        component_count: { type: integer }
+        variant_count: { type: integer }
+        parsed:
+          allOf:
+            - $ref: '#/components/schemas/AIOutput'
+          nullable: true
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        parsed_at: { type: string, format: date-time, nullable: true }
+        imported_at: { type: string, format: date-time, nullable: true }
+
+    AIGenerationList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/AIGeneration' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    AIGenerationCreate:
+      type: object
+      required: [brief]
+      properties:
+        brief: { $ref: '#/components/schemas/AIBrief' }
+        campaign_id: { type: string, format: uuid }
+      additionalProperties: false
+
+    AIParseRequest:
+      type: object
+      required: [raw_output]
+      properties:
+        raw_output:
+          type: string
+          minLength: 1
+          maxLength: 200000
+          description: The JSON pasted back from the model, exactly as it was given
+      additionalProperties: false
+
+    AIImportRequest:
+      type: object
+      description: Omitting both index lists imports everything the generation parsed.
+      properties:
+        component_indexes:
+          type: array
+          maxItems: 200
+          items: { type: integer, minimum: 0 }
+        variant_indexes:
+          type: array
+          maxItems: 200
+          items: { type: integer, minimum: 0 }
+        attach_to_campaign_id: { type: string, format: uuid }
+      additionalProperties: false
+
+    AIImportResult:
+      type: object
+      required: [components, variants]
+      properties:
+        components:
+          type: array
+          items: { $ref: '#/components/schemas/EmailComponent' }
+        variants:
+          type: array
+          items: { $ref: '#/components/schemas/EmailVariant' }
+
+    SendingAccount:
+      type: object
+      description: |
+        A mailbox Instantly sends from. The stat fields are present when the account is
+        read through the sending-accounts endpoints and absent when it is nested in a
+        campaign's response.
+      required: [id, email, status, setup_pending, is_managed, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        first_name: { type: string, nullable: true }
+        last_name: { type: string, nullable: true }
+        provider_code: { type: integer, nullable: true }
+        status: { type: integer, description: Instantly's numeric account status }
+        warmup_status: { type: integer, nullable: true }
+        daily_limit: { type: integer, nullable: true }
+        sending_gap: { type: integer, nullable: true }
+        warmup_score: { type: integer, nullable: true }
+        status_message: { type: string, nullable: true }
+        tracking_domain: { type: string, nullable: true }
+        tracking_domain_status: { type: string, nullable: true }
+        setup_pending: { type: boolean }
+        is_managed: { type: boolean }
+        last_synced_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        sent_30d: { type: integer, format: int64 }
+        bounced_30d: { type: integer, format: int64 }
+        replies_30d: { type: integer, format: int64 }
+        campaigns: { type: integer, format: int64 }
+        last_activity_at: { type: string, format: date-time, nullable: true }
+        local_sends: { type: integer, format: int64 }
+        local_bounces: { type: integer, format: int64 }
+        local_replies: { type: integer, format: int64 }
+
+    SendingAccountDaily:
+      type: object
+      required: [sending_account_id, day, sent, bounced, contacted, new_leads_contacted,
+                 opened, unique_opened, replies, unique_replies, clicks, unique_clicks, fetched_at]
+      properties:
+        sending_account_id: { type: string, format: uuid }
+        day: { type: string, format: date }
+        sent: { type: integer }
+        bounced: { type: integer }
+        contacted: { type: integer }
+        new_leads_contacted: { type: integer }
+        opened: { type: integer }
+        unique_opened: { type: integer }
+        replies: { type: integer }
+        unique_replies: { type: integer }
+        clicks: { type: integer }
+        unique_clicks: { type: integer }
+        fetched_at: { type: string, format: date-time }
+
+    SendingAccountDetail:
+      type: object
+      required: [account, daily, campaigns]
+      properties:
+        account: { $ref: '#/components/schemas/SendingAccount' }
+        daily:
+          type: array
+          items: { $ref: '#/components/schemas/SendingAccountDaily' }
+        campaigns:
+          type: array
+          items: { $ref: '#/components/schemas/CampaignSummary' }
+
+    VariantAssignment:
+      type: object
+      description: |
+        The variant one lead was given for one step, with the email as it was rendered.
+        Once `locked_at` is set the text is frozen: it is what actually left the
+        mailbox, so no later edit to a component or weight may rewrite it.
+      required: [id, campaign_lead_id, step, variant_id, weights_version, seed_hash,
+                 rendered_subject, rendered_body, assigned_at]
+      properties:
+        id: { type: string, format: uuid }
+        campaign_lead_id: { type: string, format: uuid }
+        step: { type: integer, minimum: 1, maximum: 5 }
+        variant_id: { type: string, format: uuid }
+        weights_version: { type: integer }
+        seed_hash:
+          type: string
+          description: The deterministic draw behind this assignment, so it can be reproduced
+        rendered_subject: { type: string }
+        rendered_body: { type: string }
+        component_ids:
+          type: array
+          items: { type: string, format: uuid }
+        subject_component_id: { type: string, format: uuid, nullable: true }
+        hook_component_id: { type: string, format: uuid, nullable: true }
+        cta_component_id: { type: string, format: uuid, nullable: true }
+        assigned_at: { type: string, format: date-time }
+        locked_at: { type: string, format: date-time, nullable: true }
+
+    EmailSend:
+      type: object
+      required: [id, campaign_lead_id, campaign_id, contact_id, step, open_count,
+                 click_count, sent_at, source, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        campaign_lead_id: { type: string, format: uuid }
+        assignment_id: { type: string, format: uuid, nullable: true }
+        campaign_id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        step: { type: integer, minimum: 1, maximum: 5 }
+        variant_id: { type: string, format: uuid, nullable: true }
+        sending_account_email: { type: string, nullable: true }
+        sending_account_id: { type: string, format: uuid, nullable: true }
+        instantly_email_id: { type: string, nullable: true }
+        provider_message_id: { type: string, nullable: true }
+        subject_snapshot: { type: string, nullable: true }
+        sent_at: { type: string, format: date-time }
+        first_opened_at: { type: string, format: date-time, nullable: true }
+        last_opened_at: { type: string, format: date-time, nullable: true }
+        open_count: { type: integer }
+        first_clicked_at: { type: string, format: date-time, nullable: true }
+        last_clicked_at: { type: string, format: date-time, nullable: true }
+        click_count: { type: integer }
+        replied_at: { type: string, format: date-time, nullable: true }
+        reply_classification:
+          allOf:
+            - $ref: '#/components/schemas/ReplyClassification'
+          nullable: true
+        bounced_at: { type: string, format: date-time, nullable: true }
+        unsubscribed_at: { type: string, format: date-time, nullable: true }
+        source: { $ref: '#/components/schemas/SendSource' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ContactEvent:
+      type: object
+      required: [id, contact_id, type, occurred_at, source, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        contact_id: { type: string, format: uuid }
+        campaign_id: { type: string, format: uuid, nullable: true }
+        campaign_lead_id: { type: string, format: uuid, nullable: true }
+        assignment_id: { type: string, format: uuid, nullable: true }
+        variant_id: { type: string, format: uuid, nullable: true }
+        send_id: { type: string, format: uuid, nullable: true }
+        step: { type: integer, nullable: true }
+        type: { $ref: '#/components/schemas/ContactEventType' }
+        occurred_at: { type: string, format: date-time }
+        source: { $ref: '#/components/schemas/ContactEventSource' }
+        provider_event_id: { type: string, format: uuid, nullable: true }
+        stage_before:
+          allOf:
+            - $ref: '#/components/schemas/ContactStage'
+          nullable: true
+        stage_after:
+          allOf:
+            - $ref: '#/components/schemas/ContactStage'
+          nullable: true
+        data:
+          type: object
+          additionalProperties: true
+          nullable: true
+        created_at: { type: string, format: date-time }
+
+    ContactEventList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/ContactEvent' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    NewsletterAudience:
+      type: object
+      description: |
+        A Mailchimp audience. `webhook_token` and the signing secret are never
+        returned; `webhook_url` already carries what the client needs to show.
+      required: [id, mailchimp_list_id, name, double_optin, allow_single_opt_in,
+                 default_tags, is_default, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        mailchimp_list_id: { type: string }
+        name: { type: string }
+        double_optin: { type: boolean, description: What Mailchimp itself has configured }
+        allow_single_opt_in:
+          type: boolean
+          description: |
+            Whether a push may ask for `subscribed` directly. Off means every contact
+            still confirms by email, whatever consent we hold.
+        default_tags:
+          type: array
+          items: { type: string }
+        webhook_id: { type: string, nullable: true }
+        webhook_url: { type: string, nullable: true }
+        member_count: { type: integer, nullable: true }
+        stats:
+          type: object
+          additionalProperties: true
+          nullable: true
+        is_default: { type: boolean }
+        last_synced_at: { type: string, format: date-time, nullable: true }
+        last_sync_error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    NewsletterAudienceUpdate:
+      type: object
+      properties:
+        allow_single_opt_in: { type: boolean }
+        default_tags:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 60 }
+        is_default: { type: boolean }
+      additionalProperties: false
+
+    ConsentDecision:
+      type: object
+      description: |
+        The consent gate's verdict for one contact. `reason` is the machine code and
+        `explanation` the sentence to show; both are returned so the UI never re-derives
+        the rule.
+      required: [eligible, requested_status, reason, explanation]
+      properties:
+        eligible: { type: boolean }
+        requested_status: { $ref: '#/components/schemas/RequestedSubscriptionStatus' }
+        reason:
+          type: string
+          description: Empty when eligible
+          example: no_consent
+        explanation: { type: string }
+
+    EligibleContactRecord:
+      allOf:
+        - $ref: '#/components/schemas/Contact'
+        - type: object
+          properties:
+            consent_id: { type: string, format: uuid, nullable: true }
+            consent_source:
+              allOf:
+                - $ref: '#/components/schemas/ConsentSource'
+              nullable: true
+            consent_captured_at: { type: string, format: date-time, nullable: true }
+
+    EligibleContact:
+      type: object
+      required: [contact, decision]
+      properties:
+        contact: { $ref: '#/components/schemas/EligibleContactRecord' }
+        decision: { $ref: '#/components/schemas/ConsentDecision' }
+
+    EligibleContactList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/EligibleContact' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    NewsletterPushRequest:
+      type: object
+      required: [contact_ids]
+      properties:
+        contact_ids:
+          type: array
+          minItems: 1
+          maxItems: 5000
+          items: { type: string, format: uuid }
+        audience_id:
+          type: string
+          format: uuid
+          description: Defaults to the audience flagged as default
+      additionalProperties: false
+
+    NewsletterPushRejection:
+      type: object
+      required: [contact_id, reason]
+      properties:
+        contact_id: { type: string, format: uuid }
+        reason: { type: string, example: no_consent }
+
+    NewsletterPushResult:
+      type: object
+      description: |
+        The gate is applied per contact, not to the request: what passes is queued and
+        what does not comes back with its reason, rather than failing the whole push.
+      required: [queued, rejected]
+      properties:
+        queued:
+          type: array
+          items: { type: string, format: uuid }
+        rejected:
+          type: array
+          items: { $ref: '#/components/schemas/NewsletterPushRejection' }
+
+    NewsletterSubscription:
+      type: object
+      required: [id, contact_id, audience_id, requested_status, status, sync_status,
+                 sync_attempts, tags, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        contact_id: { type: string, format: uuid }
+        audience_id: { type: string, format: uuid }
+        consent_id: { type: string, format: uuid, nullable: true }
+        requested_status: { $ref: '#/components/schemas/RequestedSubscriptionStatus' }
+        status: { $ref: '#/components/schemas/SubscriptionStatus' }
+        sync_status: { $ref: '#/components/schemas/SyncStatus' }
+        subscriber_hash: { type: string, nullable: true }
+        unique_email_id: { type: string, nullable: true }
+        mailchimp_contact_id: { type: string, nullable: true }
+        web_id: { type: integer, format: int64, nullable: true }
+        claimed_at: { type: string, format: date-time, nullable: true }
+        pushed_at: { type: string, format: date-time, nullable: true }
+        last_synced_at: { type: string, format: date-time, nullable: true }
+        last_error: { type: string, nullable: true }
+        sync_attempts: { type: integer }
+        subscribed_at: { type: string, format: date-time, nullable: true }
+        unsubscribed_at: { type: string, format: date-time, nullable: true }
+        unsubscribe_reason: { type: string, nullable: true }
+        tags:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    NewsletterSubscriptionList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/NewsletterSubscription' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    NewsletterStats:
+      type: object
+      required: [by_status, eligible, subscribed, pending, conversion_rate]
+      properties:
+        by_status: { $ref: '#/components/schemas/CountsByKey' }
+        eligible: { type: integer, format: int64 }
+        subscribed: { type: integer, format: int64 }
+        pending: { type: integer, format: int64 }
+        conversion_rate:
+          type: number
+          format: double
+          description: Subscribers over eligible contacts
+
+    WebhookStatus:
+      type: object
+      required: [registered, url, provider_id]
+      properties:
+        registered: { type: boolean }
+        url: { type: string, description: Where the provider posts; empty when unregistered }
+        provider_id: { type: string, description: The provider's own id for the registration }
+        status: { type: integer, nullable: true }
+        error: { type: string, nullable: true }
+
+    WebhookRegisterRequest:
+      type: object
+      properties:
+        rotate:
+          type: boolean
+          default: false
+          description: |
+            Replace the token and signing secret. The previous URL stops working the
+            moment this succeeds, so deliveries in flight against it are lost.
+      additionalProperties: false
+
+    WebhookAck:
+      type: object
+      description: |
+        What a provider delivery is acknowledged with. A `duplicate` is accepted rather
+        than refused: providers retry, and an event that was already stored must not
+        be applied twice.
+      required: [event_id, duplicate, stored]
+      properties:
+        event_id: { type: string, format: uuid }
+        duplicate: { type: boolean }
+        stored: { type: boolean }
+
+    EventSummary:
+      type: object
+      required: [total, unprocessed, errored]
+      properties:
+        total: { type: integer, format: int64 }
+        unprocessed: { type: integer, format: int64 }
+        errored: { type: integer, format: int64 }
+        last_received_at: { type: string, format: date-time, nullable: true }
+
+    ProviderStatus:
+      type: object
+      required: [source_id, has_key, enabled, webhook, events]
+      properties:
+        source_id: { type: string, format: uuid }
+        has_key: { type: boolean, description: Whether a key is stored; the key itself is never returned }
+        enabled: { type: boolean }
+        last_tested_at: { type: string, format: date-time, nullable: true }
+        last_test_ok: { type: boolean, nullable: true }
+        webhook: { $ref: '#/components/schemas/WebhookStatus' }
+        events: { $ref: '#/components/schemas/EventSummary' }
+        last_sync:
+          allOf:
+            - $ref: '#/components/schemas/SyncRun'
+          nullable: true
+
+    Integrations:
+      type: object
+      required: [public_base_url, instantly, mailchimp, audiences, ai]
+      properties:
+        public_base_url:
+          type: string
+          description: |
+            Where providers can reach this API. Empty means no webhook can be
+            registered and reconciliation carries the whole load.
+        instantly: { $ref: '#/components/schemas/ProviderStatus' }
+        mailchimp: { $ref: '#/components/schemas/ProviderStatus' }
+        audiences: { type: integer, description: How many Mailchimp audiences are known }
+        ai: { $ref: '#/components/schemas/AIProvider' }
+
+    ProviderTestResult:
+      type: object
+      required: [ok, detail]
+      properties:
+        ok: { type: boolean }
+        detail: { type: string, description: What the provider answered, or why it did not }
+        accounts_count: { type: integer, description: Sending accounts seen; Instantly only }
+
+    ProviderEvent:
+      type: object
+      description: |
+        One delivery as it arrived, kept verbatim. `dedupe_key` is what makes a retry
+        harmless: a second delivery with the same key is acknowledged and dropped.
+      required: [id, provider, event_type, dedupe_key, received_at, source, attempts]
+      properties:
+        id: { type: string, format: uuid }
+        provider: { $ref: '#/components/schemas/ProviderName' }
+        event_type: { type: string, example: reply_received }
+        dedupe_key: { type: string }
+        received_at: { type: string, format: date-time }
+        occurred_at: { type: string, format: date-time, nullable: true }
+        raw:
+          type: object
+          additionalProperties: true
+          nullable: true
+        source: { $ref: '#/components/schemas/ProviderEventSource' }
+        campaign_id: { type: string, format: uuid, nullable: true }
+        contact_id: { type: string, format: uuid, nullable: true }
+        campaign_lead_id: { type: string, format: uuid, nullable: true }
+        processed_at: { type: string, format: date-time, nullable: true }
+        attempts: { type: integer }
+        error: { type: string, nullable: true }
+
+    ProviderEventList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/ProviderEvent' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    SyncRun:
+      type: object
+      required: [id, kind, status, started_at, items_seen, items_updated]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/SyncRunKind' }
+        status: { $ref: '#/components/schemas/SyncRunStatus' }
+        target_id: { type: string, format: uuid, nullable: true }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time, nullable: true }
+        items_seen: { type: integer }
+        items_updated: { type: integer }
+        error: { type: string, nullable: true }
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+
+    SyncRunList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/SyncRun' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    FunnelStep:
+      type: object
+      description: |
+        One bar of the cold → subscriber funnel. `current` is who sits in the stage
+        now, `ever_reached` who has passed through it; read the second as the
+        conversion, because a contact only moves forward.
+      required: [stage, label, current, ever_reached]
+      properties:
+        stage: { $ref: '#/components/schemas/ContactStage' }
+        label: { type: string, example: Newsletter eligible }
+        current: { type: integer, format: int64 }
+        ever_reached: { type: integer, format: int64 }
+
+    CampaignOverview:
+      type: object
+      required: [campaigns, contacts_by_stage, local, interested, newsletter_eligible,
+                 subscribers, conversion_rate, funnel]
+      properties:
+        campaigns: { $ref: '#/components/schemas/CountsByKey' }
+        contacts_by_stage: { $ref: '#/components/schemas/CountsByKey' }
+        local: { $ref: '#/components/schemas/Metrics' }
+        interested: { type: integer, format: int64 }
+        newsletter_eligible: { type: integer, format: int64 }
+        subscribers: { type: integer, format: int64 }
+        conversion_rate: { type: number, format: double }
+        funnel:
+          type: array
+          items: { $ref: '#/components/schemas/FunnelStep' }
+
+    Mismatch:
+      type: object
+      description: A metric where our count and Instantly's disagree beyond tolerance.
+      required: [metric, local, instantly]
+      properties:
+        metric: { type: string, example: replied }
+        local: { type: integer, format: int64 }
+        instantly: { type: integer, format: int64 }
+
+    DailyPoint:
+      type: object
+      required: [day, sends, opened, clicked, replied, bounced]
+      properties:
+        day: { type: string, format: date }
+        sends: { type: integer, format: int64 }
+        opened: { type: integer, format: int64 }
+        clicked: { type: integer, format: int64 }
+        replied: { type: integer, format: int64 }
+        bounced: { type: integer, format: int64 }
+
+    CampaignAnalytics:
+      type: object
+      description: |
+        Our numbers and Instantly's side by side. They are never merged: the two count
+        differently, and the gap is itself a signal, which `mismatch` reports rather
+        than averages away.
+      required: [local, mismatch, daily, funnel, interested, eligible, subscribers,
+                 conversion_rate, lead_counts]
+      properties:
+        local: { $ref: '#/components/schemas/Metrics' }
+        instantly:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Instantly's own figures, unchanged; null when they could not be fetched
+        mismatch:
+          type: array
+          items: { $ref: '#/components/schemas/Mismatch' }
+        daily:
+          type: array
+          items: { $ref: '#/components/schemas/DailyPoint' }
+        funnel:
+          type: array
+          items: { $ref: '#/components/schemas/FunnelStep' }
+        interested: { type: integer, format: int64 }
+        eligible: { type: integer, format: int64 }
+        subscribers: { type: integer, format: int64 }
+        conversion_rate: { type: number, format: double }
+        lead_counts: { $ref: '#/components/schemas/CountsByKey' }
+
+    VariantAnalytics:
+      allOf:
+        - $ref: '#/components/schemas/Metrics'
+        - type: object
+          required: [variant_id, variant_name, step, assigned]
+          properties:
+            variant_id: { type: string, format: uuid }
+            variant_name: { type: string }
+            step: { type: integer, minimum: 1, maximum: 5 }
+            assigned: { type: integer, format: int64 }
+
+    ComponentAnalytics:
+      allOf:
+        - $ref: '#/components/schemas/Metrics'
+        - type: object
+          required: [component_id, type, name]
+          properties:
+            component_id: { type: string, format: uuid }
+            type: { $ref: '#/components/schemas/ComponentType' }
+            name: { type: string }
+
+    AccountAnalytics:
+      type: object
+      required: [email, local, instantly_sent, instantly_bounced, instantly_replies,
+                 instantly_bounce_rate]
+      properties:
+        sending_account_id: { type: string, format: uuid, nullable: true }
+        email: { type: string }
+        local: { $ref: '#/components/schemas/Metrics' }
+        instantly_sent: { type: integer, format: int64 }
+        instantly_bounced: { type: integer, format: int64 }
+        instantly_replies: { type: integer, format: int64 }
+        instantly_bounce_rate: { type: number, format: double }

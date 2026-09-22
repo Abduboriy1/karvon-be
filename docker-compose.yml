@@ -1,0 +1,102 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: karvon
+      POSTGRES_PASSWORD: karvon
+      POSTGRES_DB: karvon
+    ports:
+      - "5432:5432"
+    volumes:
+      - karvon-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U karvon -d karvon"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KARVON_ENV: development
+      KARVON_ADDR: ":8080"
+      KARVON_DATABASE_URL: postgres://karvon:karvon@postgres:5432/karvon?sslmode=disable
+      KARVON_MIGRATE_ON_BOOT: "true"
+      # Development defaults. Override both before exposing this anywhere.
+      KARVON_API_KEY: ${KARVON_API_KEY:-dev-key}
+      KARVON_SECRET_KEY: ${KARVON_SECRET_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
+      KARVON_CORS_ORIGIN: ${KARVON_CORS_ORIGIN:-http://localhost:5173}
+      # Blocklists are embedded in the binary; the mount below lets them be
+      # replaced without a rebuild.
+      KARVON_VERIFY_LISTS_DIR: /app/config/verify
+      KARVON_VERIFY_ROLE_SOFT_MODE: ${KARVON_VERIFY_ROLE_SOFT_MODE:-hard}
+      # The free verification providers. MailChecker is compiled in; Reacher is a
+      # separate container started with the "reacher" profile. Deliberately not
+      # listed in depends_on: the pipeline is built to survive Reacher being
+      # absent, and making the API wait for it would throw that away.
+      KARVON_VERIFY_MAILCHECKER_ENABLED: ${KARVON_VERIFY_MAILCHECKER_ENABLED:-true}
+      KARVON_VERIFY_REACHER_ENABLED: ${KARVON_VERIFY_REACHER_ENABLED:-false}
+      KARVON_VERIFY_REACHER_URL: ${KARVON_VERIFY_REACHER_URL:-http://reacher:8080}
+      KARVON_VERIFY_REACHER_SECRET: ${KARVON_VERIFY_REACHER_SECRET:-reacher-dev-secret}
+    volumes:
+      - ./config/verify:/app/config/verify:ro
+    ports:
+      - "8080:8080"
+
+  # Reacher (check-if-email-exists), the SMTP-probing verification provider.
+  #
+  # LICENCE: Reacher is dual-licensed AGPL-3.0 or commercial. Karvon is
+  # proprietary and served over a network, which is the case AGPL section 13
+  # covers, so either buy a commercial licence at https://reacher.email/pricing or
+  # accept the AGPL's source-availability obligation. The service is behind a
+  # profile and disabled in the API's configuration so that nothing depends on it
+  # until that decision is made.
+  #
+  #   docker compose --profile reacher up -d
+  #
+  # Do NOT set RCH__COMMERCIAL_LICENSE_TRIAL__*: with it, the backend POSTs every
+  # verification result — customer email addresses included — back to Reacher's
+  # own servers.
+  #
+  # Outbound port 25 is required, and most cloud providers block it. Without it
+  # every verification comes back "unknown", which the scoring layer treats as a
+  # provider that declined to answer.
+  reacher:
+    image: reacherhq/backend:v0.11.7
+    profiles: ["reacher"]
+    environment:
+      RCH__HTTP_HOST: 0.0.0.0
+      RCH__HTTP_PORT: "8080"
+      # Shared secret; must match KARVON_VERIFY_REACHER_SECRET on the API.
+      RCH__HEADER_SECRET: ${KARVON_VERIFY_REACHER_SECRET:-reacher-dev-secret}
+      # The EHLO name and MAIL FROM address of the SMTP conversation. In
+      # production both should match the reverse DNS of the egress IP, or mail
+      # servers will treat the probe as suspicious.
+      RCH__HELLO_NAME: ${KARVON_REACHER_HELLO_NAME:-localhost}
+      RCH__FROM_EMAIL: ${KARVON_REACHER_FROM_EMAIL:-hello@localhost}
+      RCH__SMTP_TIMEOUT: "45"
+      # No RabbitMQ: /v1/check_email runs the verification inline.
+      RCH__WORKER__ENABLE: "false"
+      # Reacher's own throttle. Keep it at or above
+      # KARVON_VERIFY_REACHER_CONCURRENCY so our client is the tighter bound, and
+      # low enough that mail providers do not block the egress IP.
+      RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: "60"
+      RCH__THROTTLE__MAX_REQUESTS_PER_DAY: "10000"
+      RUST_LOG: reacher=info
+    ports:
+      # 8081 on the host, because the API already owns 8080.
+      - "8081:8080"
+    healthcheck:
+      # /version is unauthenticated, so the probe needs no secret.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/version || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  karvon-pgdata:

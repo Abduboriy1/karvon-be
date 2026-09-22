@@ -1,0 +1,30 @@
+# Mailboxes that are automated or abuse endpoints. An address here is always a hard
+# fail: nobody reads them and mail to them damages sender reputation.
+# One entry per line, local part only, lower case. '#' starts a comment.
+noreply
+no-reply
+no_reply
+donotreply
+do-not-reply
+do_not_reply
+postmaster
+abuse
+mailer-daemon
+mailerdaemon
+bounce
+bounces
+bounce-handler
+spam
+listserv
+majordomo
+root
+daemon
+nobody
+undisclosed-recipients
+unsubscribe
+notifications
+notification
+alerts
+alert
+automated
+autoresponder

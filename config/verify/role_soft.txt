@@ -1,0 +1,37 @@
+# Shared business mailboxes. The brief treats these as hard fails; set
+# KARVON_VERIFY_ROLE_SOFT_MODE=penalty to cap them at 60 instead, which keeps them
+# eligible for third-party verification. For small businesses these are often the
+# only published address.
+info
+contact
+admin
+sales
+support
+billing
+accounts
+accounting
+hello
+hi
+office
+enquiries
+enquiry
+inquiries
+inquiry
+help
+service
+customerservice
+customer-service
+team
+mail
+email
+press
+media
+marketing
+careers
+jobs
+hr
+legal
+privacy
+security
+webmaster
+hostmaster

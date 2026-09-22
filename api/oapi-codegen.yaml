@@ -1,0 +1,11 @@
+# oapi-codegen configuration. Run `make gen` after editing api/openapi.yaml.
+package: gen
+output: internal/http/gen/gen.go
+generate:
+  models: true
+  chi-server: true
+  embedded-spec: true
+  strict-server: false
+output-options:
+  skip-prune: true
+  nullable-type: false

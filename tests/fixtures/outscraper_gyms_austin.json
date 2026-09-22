@@ -1,0 +1,44 @@
+{
+  "id": "outscraper-run-8813",
+  "status": "Success",
+  "data": [
+    [
+      {
+        "place_id": "ChIJ_outscraper_iron_works",
+        "name": "Iron Works Gym",
+        "type": "Gym",
+        "full_address": "812 E 6th St, Austin, TX 78702",
+        "city": "Austin",
+        "state": "TX",
+        "postal_code": "78702",
+        "phone": "+1 512-555-0134",
+        "site": "https://www.ironworksgym.com/",
+        "rating": 4.7,
+        "reviews": 318,
+        "latitude": 30.2672,
+        "longitude": -97.7431,
+        "email_1": "info@ironworksgym.com",
+        "email_2": "amy@ironworksgym.com"
+      },
+      {
+        "place_id": "ChIJ_outscraper_barbell",
+        "name": "Austin Barbell Club",
+        "category": "Fitness center",
+        "full_address": "1500 S Lamar Blvd, Austin, TX 78704",
+        "city": "Austin",
+        "state": "TX",
+        "postal_code": "78704",
+        "phone": "+1 512-555-0199",
+        "site": "austinbarbellclub.com",
+        "rating": 4.2,
+        "reviews": 96,
+        "latitude": 30.2508,
+        "longitude": -97.7661
+      },
+      {
+        "place_id": "ChIJ_outscraper_unnamed",
+        "name": ""
+      }
+    ]
+  ]
+}

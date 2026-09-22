@@ -1,0 +1,188 @@
+package httpapi
+
+import (
+	"context"
+	"io"
+	"net/url"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/bory/karvon-be/internal/business"
+	"github.com/bory/karvon-be/internal/campaign/ai"
+	campaignsvc "github.com/bory/karvon-be/internal/campaign/service"
+	"github.com/bory/karvon-be/internal/db"
+	"github.com/bory/karvon-be/internal/db/dbgen"
+	"github.com/bory/karvon-be/internal/scraper"
+	"github.com/bory/karvon-be/internal/source"
+	"github.com/bory/karvon-be/internal/stats"
+	"github.com/bory/karvon-be/internal/verify"
+)
+
+// The HTTP layer depends on these interfaces rather than on the concrete services, so
+// handlers can be exercised with stubs and the transport stays free of business logic.
+
+// JobService is the behaviour behind /jobs.
+type JobService interface {
+	Estimate(ctx context.Context, in scraper.CreateInput) (scraper.Estimate, error)
+	Create(ctx context.Context, in scraper.CreateInput) (db.JobRow, error)
+	Get(ctx context.Context, id uuid.UUID) (db.JobRow, error)
+	List(ctx context.Context, filter db.JobFilter, sort string, page, perPage int) (scraper.ListResult, error)
+	Cancel(ctx context.Context, id uuid.UUID) (db.JobRow, error)
+	Rerun(ctx context.Context, id uuid.UUID) (db.JobRow, error)
+	Recrawl(ctx context.Context, id uuid.UUID) (db.JobRow, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// BusinessService is the behaviour behind /businesses.
+type BusinessService interface {
+	List(ctx context.Context, filter db.BusinessFilter, sort string, page, perPage int) (business.ListResult, error)
+	Get(ctx context.Context, id uuid.UUID) (business.Detail, error)
+	Update(ctx context.Context, id uuid.UUID, in business.UpdateInput) (business.Detail, error)
+	Bulk(ctx context.Context, ids []uuid.UUID, action business.BulkAction) (int64, error)
+	Export(ctx context.Context, filter db.BusinessFilter, dst io.Writer, flush func()) (int, error)
+}
+
+// SourceService is the behaviour behind /sources.
+type SourceService interface {
+	List(ctx context.Context) ([]dbgen.Source, error)
+	Get(ctx context.Context, id uuid.UUID) (dbgen.Source, error)
+	Update(ctx context.Context, id uuid.UUID, in source.UpdateInput) (dbgen.Source, error)
+	Test(ctx context.Context, id uuid.UUID) (source.TestResult, error)
+}
+
+// VerificationService is the behaviour behind /verification.
+type VerificationService interface {
+	Config() verify.ServiceConfig
+	Settings(ctx context.Context) verify.Settings
+	SettingsView(ctx context.Context) (verify.SettingsView, error)
+	SaveSettings(ctx context.Context, in verify.Settings) (verify.SettingsView, error)
+	Stats(ctx context.Context) (verify.Stats, error)
+	List(ctx context.Context, filter db.VerificationFilter, sort string, page, perPage int) (verify.ListResult, error)
+	Get(ctx context.Context, id uuid.UUID) (verify.Detail, error)
+	VerifyOne(ctx context.Context, id uuid.UUID, pass verify.Pass) (dbgen.VerificationRun, error)
+	ApplyTypo(ctx context.Context, id uuid.UUID) (verify.Detail, error)
+	EstimateRun(ctx context.Context, pass verify.Pass, filter verify.RunFilter) (verify.Estimate, error)
+	CreateRun(ctx context.Context, in verify.CreateRunInput) (dbgen.VerificationRun, error)
+	GetRun(ctx context.Context, id uuid.UUID) (dbgen.VerificationRun, error)
+	ListRuns(ctx context.Context, pass, status *string, page, perPage int) (verify.RunListResult, error)
+	CancelRun(ctx context.Context, id uuid.UUID) (dbgen.VerificationRun, error)
+}
+
+// StatsService is the behaviour behind /stats/scraper.
+type StatsService interface {
+	Scraper(ctx context.Context) (stats.Scraper, error)
+}
+
+// EventStore is the read side the SSE handler needs.
+type EventStore interface {
+	ListRecentJobEvents(ctx context.Context, arg dbgen.ListRecentJobEventsParams) ([]dbgen.JobEvent, error)
+	ListJobEventsAfter(ctx context.Context, arg dbgen.ListJobEventsAfterParams) ([]dbgen.JobEvent, error)
+	GetJobStatus(ctx context.Context, id uuid.UUID) (string, error)
+}
+
+// CampaignService is the behaviour behind the whole /campaigns area: campaigns and
+// their leads, contacts and their consent, reusable content, the AI generator, the
+// sending-account mirror, the newsletter stage, analytics, and the inbound webhooks.
+//
+// It is one interface rather than eight because one service implements all of it;
+// the handlers are split by resource.
+type CampaignService interface {
+	// Campaigns.
+	CreateCampaign(ctx context.Context, in campaignsvc.CampaignInput) (db.CampaignRow, error)
+	GetCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
+	GetCampaignDetail(ctx context.Context, id uuid.UUID) (campaignsvc.CampaignDetail, error)
+	ListCampaigns(ctx context.Context, f db.CampaignFilter, sort string, page, perPage int) (campaignsvc.Page[db.CampaignRow], error)
+	UpdateCampaign(ctx context.Context, id uuid.UUID, in campaignsvc.CampaignInput) (db.CampaignRow, error)
+	ArchiveCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
+	GetChecklist(ctx context.Context, id uuid.UUID) (campaignsvc.Checklist, error)
+	LaunchCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
+	PauseCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
+	ResumeCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
+	SyncCampaign(ctx context.Context, id uuid.UUID) error
+	SetSendingAccounts(ctx context.Context, id uuid.UUID, accountIDs []uuid.UUID) ([]dbgen.SendingAccount, error)
+	ListCampaignVariants(ctx context.Context, id uuid.UUID) ([]dbgen.ListCampaignVariantsRow, error)
+	SetCampaignVariants(ctx context.Context, id uuid.UUID, items []campaignsvc.VariantWeight) ([]dbgen.ListCampaignVariantsRow, error)
+
+	// Leads.
+	EstimateImport(ctx context.Context, campaignID uuid.UUID, f db.ImportFilter) (campaignsvc.ImportResult, error)
+	ImportLeads(ctx context.Context, campaignID uuid.UUID, f db.ImportFilter) (campaignsvc.ImportResult, error)
+	ListLeads(ctx context.Context, f db.LeadFilter, sort string, page, perPage int) (campaignsvc.Page[db.LeadRow], error)
+	GetLead(ctx context.Context, campaignID, leadID uuid.UUID) (campaignsvc.LeadDetail, error)
+	RemoveLead(ctx context.Context, campaignID, leadID uuid.UUID) error
+	ListCampaignActivity(ctx context.Context, campaignID uuid.UUID, types []string, page, perPage int) (campaignsvc.Page[dbgen.ContactEvent], error)
+	ListActivity(ctx context.Context, f campaignsvc.ActivityFilter, page, perPage int) (campaignsvc.Page[dbgen.ContactEvent], error)
+
+	// Contacts and consent.
+	ListContacts(ctx context.Context, f db.ContactFilter, sort string, page, perPage int) (campaignsvc.Page[db.ContactRow], error)
+	GetContact(ctx context.Context, id uuid.UUID) (campaignsvc.ContactDetail, error)
+	UpdateContact(ctx context.Context, id uuid.UUID, in campaignsvc.ContactUpdate) (campaignsvc.ContactDetail, error)
+	ContactTimeline(ctx context.Context, id uuid.UUID, page, perPage int) (campaignsvc.Page[dbgen.ContactEvent], error)
+	RequestPermission(ctx context.Context, id uuid.UUID, note string) (campaignsvc.ContactDetail, error)
+	CaptureConsent(ctx context.Context, id uuid.UUID, in campaignsvc.ConsentInput) (dbgen.ContactConsent, error)
+	RevokeConsent(ctx context.Context, contactID, consentID uuid.UUID, reason string) (campaignsvc.ContactDetail, error)
+	SuppressContact(ctx context.Context, id uuid.UUID, reason, note string) (campaignsvc.ContactDetail, error)
+	LiftSuppression(ctx context.Context, contactID, suppressionID uuid.UUID, note string) (campaignsvc.ContactDetail, error)
+
+	// Content.
+	CreateComponent(ctx context.Context, in campaignsvc.ComponentInput) (dbgen.EmailComponent, error)
+	GetComponent(ctx context.Context, id uuid.UUID) (dbgen.EmailComponent, error)
+	ListComponents(ctx context.Context, f campaignsvc.ComponentFilter, page, perPage int) (campaignsvc.Page[dbgen.EmailComponent], error)
+	UpdateComponent(ctx context.Context, id uuid.UUID, in campaignsvc.ComponentInput) (dbgen.EmailComponent, error)
+	SetComponentStatus(ctx context.Context, id uuid.UUID, status string) (dbgen.EmailComponent, error)
+	GetComponentUsage(ctx context.Context, id uuid.UUID) (campaignsvc.ComponentUsage, error)
+	CreateVariant(ctx context.Context, in campaignsvc.VariantInput) (campaignsvc.VariantDetail, error)
+	GetVariant(ctx context.Context, id uuid.UUID) (campaignsvc.VariantDetail, error)
+	ListVariants(ctx context.Context, f campaignsvc.VariantFilter, page, perPage int) (campaignsvc.Page[dbgen.EmailVariant], error)
+	UpdateVariant(ctx context.Context, id uuid.UUID, in campaignsvc.VariantInput) (campaignsvc.VariantDetail, error)
+	SetVariantStatus(ctx context.Context, id uuid.UUID, status string) (campaignsvc.VariantDetail, error)
+	PreviewVariant(ctx context.Context, id uuid.UUID, contactID *uuid.UUID) (campaignsvc.Preview, error)
+	PreviewAssembly(ctx context.Context, refs []campaignsvc.SlotRef, contactID *uuid.UUID) (campaignsvc.Preview, error)
+
+	// AI generator.
+	AIProviderInfo() campaignsvc.AIProviderInfo
+	CreateGeneration(ctx context.Context, brief ai.Brief, campaignID *uuid.UUID) (campaignsvc.GenerationView, error)
+	GetGeneration(ctx context.Context, id uuid.UUID) (campaignsvc.GenerationView, error)
+	ListGenerations(ctx context.Context, campaignID *uuid.UUID, page, perPage int) (campaignsvc.Page[campaignsvc.GenerationView], error)
+	ParseGeneration(ctx context.Context, id uuid.UUID, raw string) (campaignsvc.GenerationView, error)
+	ImportGeneration(ctx context.Context, id uuid.UUID, sel campaignsvc.ImportSelection) (campaignsvc.ImportOutcome, error)
+
+	// Sending accounts and integrations.
+	ListSendingAccounts(ctx context.Context, status *int, q *string) ([]campaignsvc.SendingAccountView, error)
+	GetSendingAccount(ctx context.Context, id uuid.UUID) (campaignsvc.SendingAccountView, []dbgen.SendingAccountStatsDaily, []dbgen.Campaign, error)
+	SyncSendingAccounts(ctx context.Context) error
+	GetIntegrations(ctx context.Context) (campaignsvc.IntegrationsStatus, error)
+	TestInstantly(ctx context.Context) (campaignsvc.TestResult, error)
+	TestMailchimp(ctx context.Context) (campaignsvc.TestResult, error)
+	RegisterInstantlyWebhook(ctx context.Context, rotate bool) (campaignsvc.WebhookStatus, error)
+	DeleteInstantlyWebhook(ctx context.Context) error
+	ListProviderEvents(ctx context.Context, f campaignsvc.ProviderEventFilter, page, perPage int) (campaignsvc.Page[dbgen.ProviderEvent], error)
+	ReprocessProviderEvent(ctx context.Context, id uuid.UUID) (dbgen.ProviderEvent, error)
+	ListSyncRuns(ctx context.Context, kind *string, page, perPage int) (campaignsvc.Page[dbgen.SyncRun], error)
+
+	// Newsletter.
+	ListAudiences(ctx context.Context) ([]dbgen.NewsletterAudience, error)
+	SyncAudiences(ctx context.Context) error
+	UpdateAudience(ctx context.Context, id uuid.UUID, in campaignsvc.AudienceUpdate) (dbgen.NewsletterAudience, error)
+	RegisterMailchimpWebhook(ctx context.Context, id uuid.UUID) (dbgen.NewsletterAudience, error)
+	DeleteMailchimpWebhook(ctx context.Context, id uuid.UUID) (dbgen.NewsletterAudience, error)
+	ListEligible(ctx context.Context, campaignID, audienceID *uuid.UUID, page, perPage int) (campaignsvc.Page[campaignsvc.EligibleContact], error)
+	PushSubscriptions(ctx context.Context, contactIDs []uuid.UUID, audienceID *uuid.UUID) (campaignsvc.PushResult, error)
+	ListSubscriptions(ctx context.Context, f campaignsvc.SubscriptionFilter, page, perPage int) (campaignsvc.Page[dbgen.ListNewsletterSubscriptionsRow], error)
+	RetrySubscription(ctx context.Context, id uuid.UUID) (dbgen.NewsletterSubscription, error)
+	GetNewsletterStats(ctx context.Context) (campaignsvc.NewsletterStats, error)
+
+	// Analytics.
+	GetOverview(ctx context.Context) (campaignsvc.Overview, error)
+	GetCampaignAnalytics(ctx context.Context, id uuid.UUID, days int) (campaignsvc.CampaignAnalytics, error)
+	GetVariantAnalytics(ctx context.Context, id uuid.UUID) ([]campaignsvc.VariantAnalytics, error)
+	GetComponentAnalytics(ctx context.Context, componentType string, campaignID *uuid.UUID, since *time.Time) ([]campaignsvc.ComponentAnalytics, error)
+	GetSendingAccountAnalytics(ctx context.Context) ([]campaignsvc.AccountAnalytics, error)
+	GetFunnel(ctx context.Context, campaignID *uuid.UUID) ([]campaignsvc.FunnelStep, error)
+
+	// Inbound webhooks.
+	AuthenticateInstantlyWebhook(ctx context.Context, token, secret string) error
+	IngestInstantly(ctx context.Context, body []byte, source string) (campaignsvc.IngestResult, error)
+	AuthenticateMailchimpWebhook(ctx context.Context, token, signature string, body []byte, tolerance time.Duration) (dbgen.NewsletterAudience, error)
+	IngestMailchimp(ctx context.Context, audience dbgen.NewsletterAudience, form url.Values, source string) (campaignsvc.IngestResult, error)
+}
