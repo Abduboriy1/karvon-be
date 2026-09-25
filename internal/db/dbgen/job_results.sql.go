@@ -11,6 +11,26 @@ import (
 	uuid "github.com/google/uuid"
 )
 
+const addJobResults = `-- name: AddJobResults :execrows
+INSERT INTO job_results (job_id, business_id)
+SELECT $1::uuid, unnest($2::uuid[])
+ON CONFLICT (job_id, business_id) DO NOTHING
+`
+
+type AddJobResultsParams struct {
+	JobID       uuid.UUID
+	BusinessIds []uuid.UUID
+}
+
+// Attaches hand-picked businesses to a re-crawl job.
+func (q *Queries) AddJobResults(ctx context.Context, arg AddJobResultsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, addJobResults, arg.JobID, arg.BusinessIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const copyJobResults = `-- name: CopyJobResults :execrows
 INSERT INTO job_results (job_id, business_id)
 SELECT $1::uuid, src.business_id
@@ -57,6 +77,28 @@ func (q *Queries) CountJobSitesTotal(ctx context.Context, jobID uuid.UUID) (int6
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const pickRecrawlSource = `-- name: PickRecrawlSource :one
+SELECT s.id
+FROM sources s
+WHERE s.role = 'maps'
+ORDER BY EXISTS (SELECT 1
+                 FROM businesses b
+                          JOIN jobs j ON j.id = b.first_job_id
+                 WHERE b.id = ANY ($1::uuid[])
+                   AND j.source_id = s.id) DESC,
+         s.created_at
+LIMIT 1
+`
+
+// A job row needs a source even when it never searches. Prefer the Maps source that
+// first found one of the businesses, then the oldest Maps source.
+func (q *Queries) PickRecrawlSource(ctx context.Context, businessIds []uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, pickRecrawlSource, businessIds)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const upsertJobResult = `-- name: UpsertJobResult :exec

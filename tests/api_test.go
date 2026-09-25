@@ -323,6 +323,12 @@ func TestRecrawlRevisitsWebsitesWithoutCallingTheProvider(t *testing.T) {
 	if final.Stats.EmailsFound != 3 {
 		t.Errorf("emails_found = %d, want 3: the contact page address must be picked up", final.Stats.EmailsFound)
 	}
+	// Only dallasiron.com came up empty, so it is the re-crawl's whole workload: the
+	// two sites that already had an address must not start the bar part-way done.
+	if final.Stats.SitesTotal != 1 || final.Stats.SitesCrawled != 1 {
+		t.Errorf("sites = %d/%d, want 1/1: only the site without an address is re-crawled",
+			final.Stats.SitesCrawled, final.Stats.SitesTotal)
+	}
 
 	// The new job lists the same businesses, and the one that was empty now has an address.
 	rec = h.mustRequest(http.MethodGet, "/api/v1/businesses?job_id="+created.ID+"&per_page=50", "", http.StatusOK)

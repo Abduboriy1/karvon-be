@@ -115,9 +115,11 @@ const findFreshCrawledSibling = `-- name: FindFreshCrawledSibling :one
 SELECT b.id
 FROM businesses b
 WHERE b.domain = $1
-  AND b.id <> $2
+  AND lower(regexp_replace(regexp_replace(b.website, '[?#].*$', ''), '^https?://(www\.)?|/+$', '', 'gi'))
+      = $2::text
+  AND b.id <> $3
   AND b.last_crawled_at IS NOT NULL
-  AND b.last_crawled_at > now() - make_interval(days => $3::int)
+  AND b.last_crawled_at > now() - make_interval(days => $4::int)
   AND EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id)
 ORDER BY b.last_crawled_at DESC
 LIMIT 1
@@ -125,12 +127,22 @@ LIMIT 1
 
 type FindFreshCrawledSiblingParams struct {
 	Domain     *string
+	WebsiteKey string
 	ExcludeID  uuid.UUID
 	MaxAgeDays int32
 }
 
+// A sibling is another listing of the same website, not merely the same domain: a
+// city or a franchise often hosts one page per location under a single domain, and
+// each page carries its own address. The key ignores scheme, "www.", the query
+// string and trailing slashes; business.WebsiteKey computes the argument the same way.
 func (q *Queries) FindFreshCrawledSibling(ctx context.Context, arg FindFreshCrawledSiblingParams) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, findFreshCrawledSibling, arg.Domain, arg.ExcludeID, arg.MaxAgeDays)
+	row := q.db.QueryRow(ctx, findFreshCrawledSibling,
+		arg.Domain,
+		arg.WebsiteKey,
+		arg.ExcludeID,
+		arg.MaxAgeDays,
+	)
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
@@ -299,9 +311,18 @@ FROM job_results jr
 WHERE jr.job_id = $1
   AND b.website IS NOT NULL
   AND b.website <> ''
-  AND NOT EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id)
+  AND (($2::bool
+        AND NOT EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id))
+    OR ($3::bool
+        AND NOT EXISTS (SELECT 1 FROM business_socials bs WHERE bs.business_id = b.id)))
 ORDER BY b.id
 `
+
+type ListJobCrawlTargetsParams struct {
+	Jid         uuid.UUID
+	WantEmails  bool
+	WantSocials bool
+}
 
 type ListJobCrawlTargetsRow struct {
 	ID      uuid.UUID
@@ -309,8 +330,9 @@ type ListJobCrawlTargetsRow struct {
 	Domain  *string
 }
 
-func (q *Queries) ListJobCrawlTargets(ctx context.Context, jid uuid.UUID) ([]ListJobCrawlTargetsRow, error) {
-	rows, err := q.db.Query(ctx, listJobCrawlTargets, jid)
+// The job's businesses with a website that still lack what the crawl looks for.
+func (q *Queries) ListJobCrawlTargets(ctx context.Context, arg ListJobCrawlTargetsParams) ([]ListJobCrawlTargetsRow, error) {
+	rows, err := q.db.Query(ctx, listJobCrawlTargets, arg.Jid, arg.WantEmails, arg.WantSocials)
 	if err != nil {
 		return nil, err
 	}

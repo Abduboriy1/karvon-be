@@ -96,19 +96,29 @@ WHERE id = ANY (sqlc.arg('ids')::uuid[])
 UPDATE businesses SET last_crawled_at = now(), updated_at = now() WHERE id = $1;
 
 -- name: ListJobCrawlTargets :many
+-- The job's businesses with a website that still lack what the crawl looks for.
 SELECT b.id, b.website, b.domain
 FROM job_results jr
          JOIN businesses b ON b.id = jr.business_id
 WHERE jr.job_id = sqlc.arg('jid')
   AND b.website IS NOT NULL
   AND b.website <> ''
-  AND NOT EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id)
+  AND ((sqlc.arg('want_emails')::bool
+        AND NOT EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id))
+    OR (sqlc.arg('want_socials')::bool
+        AND NOT EXISTS (SELECT 1 FROM business_socials bs WHERE bs.business_id = b.id)))
 ORDER BY b.id;
 
 -- name: FindFreshCrawledSibling :one
+-- A sibling is another listing of the same website, not merely the same domain: a
+-- city or a franchise often hosts one page per location under a single domain, and
+-- each page carries its own address. The key ignores scheme, "www.", the query
+-- string and trailing slashes; business.WebsiteKey computes the argument the same way.
 SELECT b.id
 FROM businesses b
 WHERE b.domain = sqlc.arg('domain')
+  AND lower(regexp_replace(regexp_replace(b.website, '[?#].*$', ''), '^https?://(www\.)?|/+$', '', 'gi'))
+      = sqlc.arg('website_key')::text
   AND b.id <> sqlc.arg('exclude_id')
   AND b.last_crawled_at IS NOT NULL
   AND b.last_crawled_at > now() - make_interval(days => sqlc.arg('max_age_days')::int)

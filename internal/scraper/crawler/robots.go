@@ -98,8 +98,15 @@ func matchRobotsPattern(pattern, path string) bool {
 	pattern = strings.TrimSuffix(pattern, "$")
 	parts := strings.Split(pattern, "*")
 
+	// With "$" the last segment must sit flush against the end of the path, so it is
+	// matched there below rather than at its leftmost occurrence.
+	literal := parts
+	if mustEnd {
+		literal = parts[:len(parts)-1]
+	}
+
 	pos := 0
-	for i, part := range parts {
+	for i, part := range literal {
 		if part == "" {
 			continue
 		}
@@ -116,11 +123,15 @@ func matchRobotsPattern(pattern, path string) bool {
 		}
 		pos += idx + len(part)
 	}
-	if mustEnd {
-		last := parts[len(parts)-1]
-		return strings.HasSuffix(path, last)
+	if !mustEnd {
+		return true
 	}
-	return true
+	last := parts[len(parts)-1]
+	if len(parts) == 1 {
+		return path == last
+	}
+	start := len(path) - len(last)
+	return start >= pos && path[start:] == last
 }
 
 // ParseRobots reads a robots.txt body into a policy.

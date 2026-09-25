@@ -68,6 +68,16 @@ type BusinessEmail struct {
 	FoundAt    time.Time
 }
 
+type BusinessSocial struct {
+	ID         uuid.UUID
+	BusinessID uuid.UUID
+	Network    string
+	Handle     string
+	Url        string
+	PageUrl    *string
+	FoundAt    time.Time
+}
+
 type Campaign struct {
 	ID                        uuid.UUID
 	Name                      string

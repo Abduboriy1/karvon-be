@@ -41,7 +41,9 @@ type stubJobs struct {
 	estimate scraper.Estimate
 	err      error
 
-	recrawled []uuid.UUID
+	recrawlTargets []string
+	recrawlFilter  *db.BusinessFilter
+	recrawled      []uuid.UUID
 
 	lastCreate  scraper.CreateInput
 	lastFilter  db.JobFilter
@@ -71,8 +73,15 @@ func (s *stubJobs) List(_ context.Context, filter db.JobFilter, sort string, pag
 func (s *stubJobs) Cancel(context.Context, uuid.UUID) (db.JobRow, error) { return s.job, s.err }
 func (s *stubJobs) Rerun(context.Context, uuid.UUID) (db.JobRow, error)  { return s.job, s.err }
 
-func (s *stubJobs) Recrawl(_ context.Context, id uuid.UUID) (db.JobRow, error) {
+func (s *stubJobs) Recrawl(_ context.Context, id uuid.UUID, targets []string) (db.JobRow, error) {
 	s.recrawled = append(s.recrawled, id)
+	s.recrawlTargets = targets
+	return s.job, s.err
+}
+
+func (s *stubJobs) RecrawlBusinesses(_ context.Context, filter db.BusinessFilter, targets []string) (db.JobRow, error) {
+	s.recrawlFilter = &filter
+	s.recrawlTargets = targets
 	return s.job, s.err
 }
 

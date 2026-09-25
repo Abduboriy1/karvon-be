@@ -24,7 +24,8 @@ const defaultRateLimitSnooze = 30 * time.Second
 // Everything it does before calling out is a guard: the free-stage gate and the send
 // lock are re-checked here rather than trusted from when the run was created, and the
 // lock is then claimed in the database, so an address cannot be sent to a third party
-// twice and cannot be sent at all unless it survived the free pass.
+// twice and cannot be sent at all unless it survived the free pass. The one exception
+// is a single address the operator asked for by hand, which skips the score floor.
 type ThirdPartyWorker struct {
 	river.WorkerDefaults[verify.ThirdPartyArgs]
 	deps *Deps
@@ -54,7 +55,12 @@ func (w *ThirdPartyWorker) Work(ctx context.Context, rj *river.Job[verify.ThirdP
 		return fmt.Errorf("verify jobs: load verification: %w", err)
 	}
 
-	if reason := d.skipReason(ctx, row); reason != "" {
+	filter, err := decodeFilter(run.Filter)
+	if err != nil {
+		return d.finishItem(ctx, runID, verificationID, verify.ItemFailed, 0, err.Error())
+	}
+
+	if reason := d.skipReason(ctx, row, filter); reason != "" {
 		return d.finishItem(ctx, runID, verificationID, verify.ItemSkipped, 0, reason)
 	}
 
@@ -106,7 +112,7 @@ func (d *Deps) releaseSend(ctx context.Context, row dbgen.EmailVerification) {
 // Every condition here is re-checked immediately before spending money, rather than
 // trusted from when the run was created, because the run may have been queued for
 // hours behind a backlog.
-func (d *Deps) skipReason(ctx context.Context, row dbgen.EmailVerification) string {
+func (d *Deps) skipReason(ctx context.Context, row dbgen.EmailVerification, filter verify.RunFilter) string {
 	settings := d.Settings.Settings(ctx)
 	// The one-send rule comes first: no setting and no score can lift it.
 	if row.ThirdPartySentAt != nil {
@@ -119,7 +125,7 @@ func (d *Deps) skipReason(ctx context.Context, row dbgen.EmailVerification) stri
 	if row.FreeScoredAt == nil {
 		return "skipped: the address has not been through the free checks"
 	}
-	band := verify.PaidBandOf(settings)
+	band := verify.PaidBandFor(settings, filter)
 	if int(row.FreeScore) < band.Min {
 		return fmt.Sprintf("skipped: the free checks scored %d, below the %d needed",
 			row.FreeScore, band.Min)

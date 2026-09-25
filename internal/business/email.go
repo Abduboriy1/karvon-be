@@ -68,11 +68,12 @@ var imageExtensions = []string{".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
 func NormalizeEmail(raw string) (string, bool) {
 	e := strings.ToLower(strings.TrimSpace(raw))
 	e = strings.Trim(e, ".,;:<>()[]\"'")
-	local, domain, found := strings.Cut(e, "@")
-	if !found || local == "" || domain == "" {
+	// Exactly one "@": Cut splits at the first, so a second one would hide in domain.
+	if strings.Count(e, "@") != 1 {
 		return "", false
 	}
-	if strings.Contains(local, "@") || !strings.Contains(domain, ".") {
+	local, domain, _ := strings.Cut(e, "@")
+	if local == "" || domain == "" || !strings.Contains(domain, ".") {
 		return "", false
 	}
 	if strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") || strings.Contains(domain, "..") {

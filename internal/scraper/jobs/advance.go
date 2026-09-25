@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
 
+	"github.com/bory/karvon-be/internal/db/dbgen"
 	"github.com/bory/karvon-be/internal/events"
 	"github.com/bory/karvon-be/internal/scraper"
 )
@@ -34,7 +35,12 @@ func (d *Deps) advanceAfterQueries(ctx context.Context, jobID uuid.UUID, cfg scr
 	if err != nil {
 		return fmt.Errorf("jobs: count sites: %w", err)
 	}
-	targets, err := d.Store.ListJobCrawlTargets(ctx, jobID)
+	wantEmails, wantSocials := cfg.CrawlTargets()
+	targets, err := d.Store.ListJobCrawlTargets(ctx, dbgen.ListJobCrawlTargetsParams{
+		Jid:         jobID,
+		WantEmails:  wantEmails,
+		WantSocials: wantSocials,
+	})
 	if err != nil {
 		return fmt.Errorf("jobs: list crawl targets: %w", err)
 	}
@@ -48,6 +54,13 @@ func (d *Deps) advanceAfterQueries(ctx context.Context, jobID uuid.UUID, cfg scr
 	// as done, so the progress bar starts from the right place.
 	st.SitesCrawled = int(sitesTotal) - len(targets)
 	if st.SitesCrawled < 0 {
+		st.SitesCrawled = 0
+	}
+	// A re-crawl exists only to visit the sites that came up empty; the ones that
+	// already have an address are not part of its work. Counting them as done would
+	// open the bar at however large a share of the job already had emails.
+	if cfg.IsRecrawl() {
+		st.SitesTotal = len(targets)
 		st.SitesCrawled = 0
 	}
 	if err := d.saveStats(ctx, jobID, st); err != nil {

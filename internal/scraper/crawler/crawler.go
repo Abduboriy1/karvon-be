@@ -80,8 +80,11 @@ const (
 
 // SiteResult is the outcome of crawling one website.
 type SiteResult struct {
-	Domain       string
-	Emails       []Found
+	Domain string
+	Emails []Found
+	// Socials are the social profiles the fetched pages link to. A site whose own
+	// address is a social profile (SkipPlatform) reports that profile here.
+	Socials      []SocialLink
 	PagesFetched int
 	Skipped      SkipReason
 }
@@ -119,8 +122,8 @@ func New(cfg Config) *Crawler {
 // MaxExtraPages contact-like pages on the same host: first the links the homepage
 // itself advertises (ranked by ContactWords), then the conventional ContactPaths.
 //
-// A failure to fetch any single page is not fatal: whatever was found so far is
-// returned together with the error, and callers record it as a warning. When the
+// A failure to fetch any single page is not fatal. An error is returned only when no
+// page of the site could be fetched at all, and callers record it as a warning. When the
 // homepage itself cannot be fetched the conventional paths are still tried, because a
 // blocked or broken landing page often sits next to a perfectly reachable contact page.
 func (c *Crawler) CrawlSite(ctx context.Context, website string) (SiteResult, error) {
@@ -129,7 +132,13 @@ func (c *Crawler) CrawlSite(ctx context.Context, website string) (SiteResult, er
 		return SiteResult{Skipped: SkipInvalidURL}, nil
 	}
 	if business.IsPlatformDomain(domain) {
-		return SiteResult{Domain: domain, Skipped: SkipPlatform}, nil
+		// A business whose only web presence is a social profile is not crawled, but
+		// the profile itself is still worth keeping.
+		result := SiteResult{Domain: domain, Skipped: SkipPlatform}
+		if link, ok := SocialProfile(normalized); ok {
+			result.Socials = []SocialLink{link}
+		}
+		return result, nil
 	}
 
 	root, err := url.Parse(normalized)
@@ -157,6 +166,7 @@ func (c *Crawler) CrawlSite(ctx context.Context, website string) (SiteResult, er
 		firstErr = err
 	} else {
 		result.PagesFetched++
+		result.addSocials(ExtractSocialLinks(page))
 		result.Emails = ExtractEmails(page)
 		if len(result.Emails) > 0 {
 			return result, nil
@@ -179,13 +189,40 @@ func (c *Crawler) CrawlSite(ctx context.Context, website string) (SiteResult, er
 			continue
 		}
 		result.PagesFetched++
+		result.addSocials(ExtractSocialLinks(next))
 		if found := ExtractEmails(next); len(found) > 0 {
 			result.Emails = found
 			// A contact page that answered makes an unreachable homepage moot.
 			return result, nil
 		}
 	}
+	// Guessed contact paths are expected to 404 on most sites. Once any page of the
+	// site answered, the site was crawled; only a site that never answered failed.
+	if result.PagesFetched > 0 {
+		return result, nil
+	}
 	return result, firstErr
+}
+
+// addSocials appends profiles not already recorded, up to MaxSocialLinks. The
+// homepage is fetched first, so its links win the PageURL of a profile that every
+// page repeats in its footer.
+func (r *SiteResult) addSocials(links []SocialLink) {
+	for _, link := range links {
+		if len(r.Socials) >= MaxSocialLinks {
+			return
+		}
+		duplicate := false
+		for _, have := range r.Socials {
+			if have.URL == link.URL {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			r.Socials = append(r.Socials, link)
+		}
+	}
 }
 
 // candidatePages merges contact-ish links found on the homepage (when it was

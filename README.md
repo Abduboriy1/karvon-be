@@ -404,7 +404,8 @@ Base path `/api/v1`. Everything except `/healthz` and `/openapi.json` requires
 | `GET /jobs/{id}` | Detail including live `stats`. |
 | `POST /jobs/{id}/cancel` | Cooperative cancel; 409 if the job already finished. |
 | `POST /jobs/{id}/rerun` | Clone the immutable config into a new job (201). |
-| `POST /jobs/{id}/recrawl` | Re-crawl a finished job's websites for emails (201). Copies the job's businesses into a new job that starts at the crawl stage: no provider search, no spend. Sites that already have an address are skipped. 409 while the job is still running or when it has no businesses. |
+| `POST /jobs/{id}/recrawl` | Re-crawl a finished job's websites (201). Copies the job's businesses into a new job that starts at the crawl stage: no provider search, no spend. Optional body `{"targets":["emails","socials"]}` (default `["emails"]`): a business is revisited when it lacks any target. 409 while the job is still running or when it has no businesses. |
+| `POST /businesses/recrawl` | Re-crawl selected (`ids`) or filtered businesses from the master list for `targets` `emails` and/or `socials` (201, a new job). Same filter fields as `/businesses/export`; at most 20000 businesses. |
 | `DELETE /jobs/{id}` | Delete the job, its queries, events and result links. 204. |
 | `GET /jobs/{id}/events` | **SSE**: `progress`, `log`, `status`. Supports `Last-Event-ID` / `?after=`. |
 | `GET /jobs/{id}/export.csv` | Streamed per-job CSV attachment. |
@@ -514,9 +515,17 @@ stage: it is the cleanup that stops vendor runs still spending after a job ends.
    paths (`/contact`, `/contact.html`, `/pages/contact`, …). A homepage that cannot be
    fetched still gets the conventional paths tried. Rules that are not optional: `robots.txt` is honoured,
    at most one request per second per host, a 10 s timeout, a 2 MB body cap, at most
-   three redirects. A domain crawled in the last `KARVON_CRAWL_RECRAWL_AFTER_DAYS` days
-   is reused rather than refetched. A single site failing is a `warn` log line, never a
-   job failure.
+   three redirects. A website (same page: scheme, `www.`, query string and trailing
+   slash ignored, path kept) crawled in the last `KARVON_CRAWL_RECRAWL_AFTER_DAYS` days
+   is reused rather than refetched; re-crawls always fetch fresh. A site counts as
+   failed — a `warn` log line, never a job failure — only when no page of it could be
+   fetched; guessed contact paths that 404 are expected and not reported. Every fetched page is also scanned for social profile links (Facebook,
+   Instagram, TikTok, YouTube, LinkedIn, X, Threads, Pinterest, Yelp, Linktree — in
+   anchors, JSON-LD `sameAs` and inline scripts). Share buttons, pixels and individual
+   posts are dropped, each profile is stored once in canonical form in
+   `business_socials`, and `GET /businesses/{id}` returns them as `socials`. A business
+   whose website *is* a social profile is not fetched but keeps that profile. Social
+   pages themselves are never fetched.
 4. **`scrape_finalize`** — recompute the statistics from the tables (the incremental
    counters are only for live progress), then set `done`, or `failed` when more than
    half the queries failed. `stats.duplicates` is listings minus unique businesses:
@@ -831,6 +840,12 @@ prefers `info@` over everything else, so most scraped primaries will tag red. Se
 the mode to `penalty` to cap those addresses at 60 instead, which keeps them
 eligible. Automated and abuse mailboxes (`noreply@`, `postmaster@`) are a hard
 failure in both modes.
+
+These gates, like the paid band's `paid_min_score` floor, apply to bulk runs. The
+single-address action (`POST /verification/emails/{id}/third-party`) skips the
+floor: an address picked by hand is sent however low the free checks scored it.
+It still needs the free checks to have run, still respects the ceiling, and is still
+never sent twice.
 
 ### Blocklists
 

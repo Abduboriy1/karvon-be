@@ -393,3 +393,27 @@ func TestCrawlSiteUsesCustomContactWordsAndPaths(t *testing.T) {
 		t.Fatalf("Emails = %+v", result.Emails)
 	}
 }
+
+func TestCrawlSiteDoesNotReportMissingGuessedPagesAsAnError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<p>No address here</p>`))
+	})
+
+	crawler, base := newTestCrawler(t, mux)
+	result, err := crawler.CrawlSite(context.Background(), base)
+	if err != nil {
+		t.Fatalf("err = %v, want nil: the homepage answered, the guessed paths just do not exist", err)
+	}
+	if result.PagesFetched != 1 {
+		t.Fatalf("PagesFetched = %d, want 1", result.PagesFetched)
+	}
+}

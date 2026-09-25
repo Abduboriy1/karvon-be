@@ -118,7 +118,7 @@ func (w *RunWorker) expand(ctx context.Context, pass verify.Pass, filter verify.
 		// so a run created minutes ago cannot bill for an address that has since
 		// been sent, downgraded, or scored high enough that paying adds nothing.
 		complete, notSent := true, false
-		band := verify.PaidBandOf(d.Settings.Settings(ctx))
+		band := verify.PaidBandFor(d.Settings.Settings(ctx), filter)
 		minScore, maxScore := band.Min, band.Max
 		selector.FreeComplete = &complete
 		selector.MinFreeScore = &minScore

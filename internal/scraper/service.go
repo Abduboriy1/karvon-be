@@ -288,7 +288,12 @@ func (s *Service) Rerun(ctx context.Context, id uuid.UUID) (db.JobRow, error) {
 	}
 
 	// A re-run always searches again, even when the source job was itself a re-crawl.
+	// A re-crawl of hand-picked businesses has no search to repeat.
+	if cfg.IsRecrawl() && cfg.RecrawlOf == nil {
+		return db.JobRow{}, apperr.Conflict("a re-crawl of selected businesses has no search to re-run")
+	}
 	cfg.RecrawlOf = nil
+	cfg.RecrawlTargets = nil
 	cfg = cfg.Normalize()
 	if err := cfg.Validate(s.maxQueries); err != nil {
 		return db.JobRow{}, err
@@ -306,7 +311,12 @@ func (s *Service) Rerun(ctx context.Context, id uuid.UUID) (db.JobRow, error) {
 //
 // The provider's API key is not needed, so a disabled or key-less source does not
 // block a re-crawl.
-func (s *Service) Recrawl(ctx context.Context, id uuid.UUID) (db.JobRow, error) {
+func (s *Service) Recrawl(ctx context.Context, id uuid.UUID, targets []string) (db.JobRow, error) {
+	targets, err := NormalizeRecrawlTargets(targets)
+	if err != nil {
+		return db.JobRow{}, err
+	}
+
 	row, err := s.Get(ctx, id)
 	if err != nil {
 		return db.JobRow{}, err
@@ -329,15 +339,23 @@ func (s *Service) Recrawl(ctx context.Context, id uuid.UUID) (db.JobRow, error) 
 
 	// Point at the original search, not at an intermediate re-crawl, so the chain
 	// stays one level deep however often the user re-crawls.
-	origin := id
-	if cfg.RecrawlOf != nil {
-		origin = *cfg.RecrawlOf
+	// A re-crawl of hand-picked businesses has no search behind it, so it stays one
+	// and has no config to validate.
+	selection := cfg.IsRecrawl() && cfg.RecrawlOf == nil
+	if !selection {
+		origin := id
+		if cfg.RecrawlOf != nil {
+			origin = *cfg.RecrawlOf
+		}
+		cfg.RecrawlOf = &origin
 	}
 	cfg.CrawlEmails = true
-	cfg.RecrawlOf = &origin
+	cfg.RecrawlTargets = targets
 	cfg = cfg.Normalize()
-	if err := cfg.Validate(s.maxQueries); err != nil {
-		return db.JobRow{}, err
+	if !selection {
+		if err := cfg.Validate(s.maxQueries); err != nil {
+			return db.JobRow{}, err
+		}
 	}
 
 	return s.insertJob(ctx, suffixedName(row.Name, recrawlSuffix), row.SourceID, cfg, newJob{
@@ -353,6 +371,63 @@ func (s *Service) Recrawl(ctx context.Context, id uuid.UUID) (db.JobRow, error) 
 			}
 			if copied == 0 {
 				return fmt.Errorf("scraper: copy job results: nothing copied")
+			}
+			return nil
+		},
+	})
+}
+
+// MaxRecrawlBusinesses bounds a re-crawl of hand-picked or filtered businesses.
+const MaxRecrawlBusinesses = 20000
+
+// RecrawlBusinesses creates a re-crawl job for the businesses matching filter (or
+// exactly filter.IDs), with no provider search behind it. The job visits the ones
+// that still lack any of targets; the rest count as already done.
+func (s *Service) RecrawlBusinesses(ctx context.Context, filter db.BusinessFilter, targets []string) (db.JobRow, error) {
+	targets, err := NormalizeRecrawlTargets(targets)
+	if err != nil {
+		return db.JobRow{}, err
+	}
+	total, err := s.store.CountBusinesses(ctx, filter)
+	if err != nil {
+		return db.JobRow{}, apperr.Internal(err)
+	}
+	switch {
+	case total == 0:
+		return db.JobRow{}, apperr.Conflict("no businesses match; nothing to re-crawl")
+	case total > MaxRecrawlBusinesses:
+		return db.JobRow{}, apperr.Validation("too many businesses to re-crawl at once", apperr.FieldError{
+			Field:   "filter",
+			Message: fmt.Sprintf("matches %d businesses; narrow it to at most %d", total, MaxRecrawlBusinesses),
+		})
+	}
+	businessIDs, err := s.store.ListBusinessIDs(ctx, filter, MaxRecrawlBusinesses)
+	if err != nil {
+		return db.JobRow{}, apperr.Internal(err)
+	}
+	sourceID, err := s.store.PickRecrawlSource(ctx, businessIDs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.JobRow{}, apperr.Conflict("no Google Maps source is configured")
+	}
+	if err != nil {
+		return db.JobRow{}, apperr.Internal(fmt.Errorf("scraper: pick re-crawl source: %w", err))
+	}
+
+	cfg := Config{
+		Terms:          []string{},
+		Locations:      []Location{},
+		MaxPerQuery:    DefaultMaxPerQuery,
+		CrawlEmails:    true,
+		Concurrency:    DefaultConcurrency,
+		RecrawlTargets: targets,
+	}
+	name := fmt.Sprintf("Re-crawl of %d business(es) for %s", len(businessIDs), strings.Join(targets, " and "))
+	return s.insertJob(ctx, name, sourceID, cfg, newJob{
+		stats: Stats{ListingsFound: len(businessIDs)},
+		args:  func(jobID uuid.UUID) river.JobArgs { return RecrawlArgs{JobID: jobID} },
+		prepare: func(ctx context.Context, q *dbgen.Queries, jobID uuid.UUID) error {
+			if _, err := q.AddJobResults(ctx, dbgen.AddJobResultsParams{JobID: jobID, BusinessIds: businessIDs}); err != nil {
+				return fmt.Errorf("scraper: add job results: %w", err)
 			}
 			return nil
 		},

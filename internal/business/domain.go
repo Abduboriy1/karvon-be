@@ -3,6 +3,7 @@ package business
 import (
 	"net"
 	"net/url"
+	"regexp"
 	"strings"
 )
 
@@ -76,4 +77,20 @@ func hasNonWebScheme(raw string) bool {
 		}
 	}
 	return false
+}
+
+// websiteKeyPrefix and websiteKeyQuery mirror the regular expressions of the
+// FindFreshCrawledSibling query; the two must stay in step.
+var (
+	websiteKeyQuery  = regexp.MustCompile(`[?#].*$`)
+	websiteKeyPrefix = regexp.MustCompile(`(?i)^https?://(www\.)?|/+$`)
+)
+
+// WebsiteKey identifies a website for crawl reuse: two listings with the same key
+// point at the same page. It ignores the scheme, a leading "www.", the query string
+// and trailing slashes, and keeps the path, so one page per location on a shared
+// domain stays distinct.
+func WebsiteKey(website string) string {
+	key := websiteKeyQuery.ReplaceAllString(strings.TrimSpace(website), "")
+	return strings.ToLower(websiteKeyPrefix.ReplaceAllString(key, ""))
 }

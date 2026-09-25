@@ -168,6 +168,28 @@ func (s *Store) CountBusinesses(ctx context.Context, f BusinessFilter) (int64, e
 	return total, nil
 }
 
+// ListBusinessIDs returns the ids of every business matching the filter, at most
+// limit of them.
+func (s *Store) ListBusinessIDs(ctx context.Context, f BusinessFilter, limit int) ([]uuid.UUID, error) {
+	a := &argSet{}
+	from, where := buildBusinessWhere(f, a)
+	rows, err := s.pool.Query(ctx, "SELECT b.id"+from+where+" ORDER BY b.id LIMIT "+a.add(limit), a.values()...)
+	if err != nil {
+		return nil, fmt.Errorf("db: list business ids: %w", err)
+	}
+	defer rows.Close()
+
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("db: scan business id: %w", err)
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // ListBusinesses returns one page of businesses ordered by a whitelisted sort key.
 func (s *Store) ListBusinesses(ctx context.Context, f BusinessFilter, sort string, limit, offset int) ([]BusinessRow, error) {
 	a := &argSet{}

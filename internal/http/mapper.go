@@ -56,7 +56,7 @@ func toAPIJobConfig(cfg scraper.Config) gen.JobConfig {
 		terms = []string{}
 	}
 	maxPerQuery, concurrency, crawlEmails := cfg.MaxPerQuery, cfg.Concurrency, cfg.CrawlEmails
-	return gen.JobConfig{
+	out := gen.JobConfig{
 		Terms:       terms,
 		Locations:   &locations,
 		MaxPerQuery: &maxPerQuery,
@@ -64,6 +64,14 @@ func toAPIJobConfig(cfg scraper.Config) gen.JobConfig {
 		CrawlEmails: &crawlEmails,
 		RecrawlOf:   cfg.RecrawlOf,
 	}
+	if len(cfg.RecrawlTargets) > 0 {
+		targets := make([]gen.RecrawlTarget, 0, len(cfg.RecrawlTargets))
+		for _, target := range cfg.RecrawlTargets {
+			targets = append(targets, gen.RecrawlTarget(target))
+		}
+		out.RecrawlTargets = &targets
+	}
+	return out
 }
 
 func toAPIJobStats(st scraper.Stats) gen.JobStats {
@@ -82,7 +90,7 @@ func toAPIJobStats(st scraper.Stats) gen.JobStats {
 	}
 }
 
-func toAPIBusiness(row db.BusinessRow) gen.Business {
+func toAPIBusiness(row db.BusinessRow, socials []dbgen.BusinessSocial) gen.Business {
 	emailsCount := int(row.EmailsCount)
 	out := gen.Business{
 		FirstJobName:               row.FirstJobName,
@@ -106,6 +114,7 @@ func toAPIBusiness(row db.BusinessRow) gen.Business {
 		FirstJobId:                 row.FirstJobID,
 		PrimaryEmail:               row.PrimaryEmail,
 		EmailsCount:                &emailsCount,
+		Socials:                    toAPISocials(socials),
 		CreatedAt:                  utc(row.CreatedAt),
 		UpdatedAt:                  utc(row.UpdatedAt),
 	}
@@ -181,7 +190,24 @@ func toAPIBusinessDetail(detail business.Detail) gen.BusinessDetail {
 		emails = append(emails, toAPIEmail(email))
 	}
 	out.Emails = &emails
+
+	out.Socials = toAPISocials(detail.Socials)
 	return out
+}
+
+func toAPISocials(rows []dbgen.BusinessSocial) *[]gen.BusinessSocial {
+	out := make([]gen.BusinessSocial, 0, len(rows))
+	for _, social := range rows {
+		out = append(out, gen.BusinessSocial{
+			Id:      social.ID,
+			Network: gen.SocialNetwork(social.Network),
+			Handle:  social.Handle,
+			Url:     social.Url,
+			PageUrl: social.PageUrl,
+			FoundAt: utc(social.FoundAt),
+		})
+	}
+	return &out
 }
 
 func toAPIEmail(row dbgen.ListBusinessEmailsWithVerificationRow) gen.BusinessEmail {

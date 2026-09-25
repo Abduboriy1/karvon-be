@@ -190,6 +190,11 @@ type RunFilter struct {
 	IncludeSuppressed bool `json:"include_suppressed,omitempty"`
 	// StaleAfterDays skips addresses verified more recently than this, for self runs.
 	StaleAfterDays *int `json:"stale_after_days,omitempty"`
+	// SkipScoreFloor lifts the paid band's minimum score. Only the single-address
+	// action sets it: an operator who explicitly asks for one address to be checked
+	// may pay for it however low the free checks scored it. It is never read from
+	// the wire, so a bulk run cannot use it.
+	SkipScoreFloor bool `json:"skip_score_floor,omitempty"`
 }
 
 // Estimate is what a run would cost before it is started.

@@ -76,7 +76,7 @@ func (s *Server) ListBusinesses(w http.ResponseWriter, r *http.Request, params g
 
 	data := make([]gen.Business, 0, len(result.Rows))
 	for _, row := range result.Rows {
-		data = append(data, toAPIBusiness(row))
+		data = append(data, toAPIBusiness(row, result.Socials[row.ID]))
 	}
 	writeJSON(w, r, http.StatusOK, gen.BusinessList{
 		Data: data,
@@ -141,6 +141,48 @@ func (s *Server) BulkUpdateBusinesses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, gen.BulkResult{Updated: int(updated)})
 }
 
+type businessRecrawlRequest struct {
+	businessExportRequest
+	Targets []string `json:"targets" validate:"required,min=1,max=2,dive,oneof=emails socials"`
+}
+
+// RecrawlBusinesses implements POST /businesses/recrawl: a re-crawl job for the
+// listed ids, or for every business matching the filter when no ids are given.
+func (s *Server) RecrawlBusinesses(w http.ResponseWriter, r *http.Request) {
+	var req businessRecrawlRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	if err := validateStruct(req); err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	row, err := s.jobs.RecrawlBusinesses(r.Context(), req.filter(), req.Targets)
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	s.writeJob(w, r, http.StatusCreated, row)
+}
+
+// filter is the business set a request selects: exactly its ids, or its filters.
+func (req businessExportRequest) filter() db.BusinessFilter {
+	return db.BusinessFilter{
+		JobID:       req.JobID,
+		Category:    req.Category,
+		State:       req.State,
+		City:        req.City,
+		Q:           req.Q,
+		HasEmail:    req.HasEmail,
+		Suppressed:  req.Suppressed,
+		EmailSource: req.EmailSource,
+		IDs:         req.IDs,
+
+		VerificationTags: req.VerificationTag,
+	}
+}
+
 // ExportBusinesses implements POST /businesses/export. The CSV is streamed, so the
 // response starts before the query has finished.
 func (s *Server) ExportBusinesses(w http.ResponseWriter, r *http.Request) {
@@ -154,20 +196,7 @@ func (s *Server) ExportBusinesses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter := db.BusinessFilter{
-		JobID:       req.JobID,
-		Category:    req.Category,
-		State:       req.State,
-		City:        req.City,
-		Q:           req.Q,
-		HasEmail:    req.HasEmail,
-		Suppressed:  req.Suppressed,
-		EmailSource: req.EmailSource,
-		IDs:         req.IDs,
-
-		VerificationTags: req.VerificationTag,
-	}
-	s.streamCSV(w, r, filter, "karvon-businesses")
+	s.streamCSV(w, r, req.filter(), "karvon-businesses")
 }
 
 // ExportJobCsv implements GET /jobs/{id}/export.csv.

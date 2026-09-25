@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,26 @@ import (
 	"github.com/bory/karvon-be/internal/events"
 	"github.com/bory/karvon-be/internal/scraper"
 	"github.com/bory/karvon-be/internal/scraper/crawler"
+)
+
+// Time limits for one crawl job. Each phase has its own budget so that a slow site
+// can only ever cost its own crawl, never the bookkeeping that follows it: a site
+// whose fetch outlived the job's deadline used to fail the write that records the
+// visit, and after the last attempt the job waited forever on a site that was
+// already done.
+const (
+	// crawlSlotWait is how long a job waits for one of its job's concurrency slots
+	// before giving its worker back and trying again later.
+	crawlSlotWait = time.Minute
+	// crawlSiteBudget bounds the fetches for one site: robots.txt, the homepage and
+	// every contact page after it. Whatever was found before it ran out is kept.
+	crawlSiteBudget = 2 * time.Minute
+	// crawlBookkeepingTimeout bounds the writes that record the visit. They run on a
+	// context detached from the job's, so an expired crawl cannot cancel them.
+	crawlBookkeepingTimeout = 30 * time.Second
+	// crawlSlotRetry is how long a job that found no free slot waits before
+	// trying again.
+	crawlSlotRetry = 5 * time.Second
 )
 
 // CrawlWorker is stage 3: fetch one business website and store the addresses found.
@@ -27,6 +48,13 @@ type CrawlWorker struct {
 
 // NewCrawlWorker builds the stage 3 worker.
 func NewCrawlWorker(deps *Deps) *CrawlWorker { return &CrawlWorker{deps: deps} }
+
+// Timeout implements river.Worker. River's default of one minute is shorter than a
+// slow site takes, so the job gets room for every phase plus the lookups between
+// them.
+func (w *CrawlWorker) Timeout(*river.Job[scraper.CrawlArgs]) time.Duration {
+	return crawlSlotWait + crawlSiteBudget + crawlBookkeepingTimeout + time.Minute
+}
 
 // Work implements river.Worker.
 func (w *CrawlWorker) Work(ctx context.Context, rj *river.Job[scraper.CrawlArgs]) error {
@@ -47,9 +75,16 @@ func (w *CrawlWorker) Work(ctx context.Context, rj *river.Job[scraper.CrawlArgs]
 		return nil //nolint:nilerr // the job is already marked failed
 	}
 
-	// Honour the job's own concurrency setting on top of the worker pool size.
-	release, err := d.crawlSlots.Acquire(ctx, jobID, cfg.Concurrency)
+	// Honour the job's own concurrency setting on top of the worker pool size. A job
+	// that cannot get a slot in time snoozes rather than failing: waiting is not an
+	// error, and a failure here would spend one of its two attempts.
+	slotCtx, cancelSlot := context.WithTimeout(ctx, crawlSlotWait)
+	release, err := d.crawlSlots.Acquire(slotCtx, jobID, cfg.Concurrency)
+	cancelSlot()
 	if err != nil {
+		if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+			return river.JobSnooze(crawlSlotRetry)
+		}
 		return err
 	}
 	defer release()
@@ -72,7 +107,8 @@ func (w *CrawlWorker) Work(ctx context.Context, rj *river.Job[scraper.CrawlArgs]
 		return d.finishSite(ctx, jobID, businessID, 0)
 	}
 
-	emailsStored, err := w.crawl(ctx, jobID, biz)
+	// A re-crawl exists to fetch the site again, so it never reuses an earlier visit.
+	emailsStored, err := w.crawl(ctx, jobID, biz, !cfg.IsRecrawl())
 	if err != nil {
 		// Record and continue: one unreachable site must not fail the job.
 		d.logLine(ctx, jobID, events.LevelWarn, "could not crawl %s: %v", displayDomain(biz), err)
@@ -80,14 +116,15 @@ func (w *CrawlWorker) Work(ctx context.Context, rj *river.Job[scraper.CrawlArgs]
 	return d.finishSite(ctx, jobID, businessID, emailsStored)
 }
 
-// crawl reuses a fresh sibling's addresses when the same domain was crawled recently,
-// otherwise it fetches the site.
-func (w *CrawlWorker) crawl(ctx context.Context, jobID uuid.UUID, biz dbgen.GetBusinessRow) (int, error) {
+// crawl reuses a fresh sibling's addresses when the same website was crawled
+// recently and reuse is allowed, otherwise it fetches the site.
+func (w *CrawlWorker) crawl(ctx context.Context, jobID uuid.UUID, biz dbgen.GetBusinessRow, reuse bool) (int, error) {
 	d := w.deps
 
-	if biz.Domain != nil && *biz.Domain != "" {
+	if reuse && biz.Domain != nil && *biz.Domain != "" {
 		siblingID, err := d.Store.FindFreshCrawledSibling(ctx, dbgen.FindFreshCrawledSiblingParams{
 			Domain:     biz.Domain,
+			WebsiteKey: business.WebsiteKey(*biz.Website),
 			ExcludeID:  biz.ID,
 			MaxAgeDays: clampInt32(d.Config.RecrawlAfterDays),
 		})
@@ -97,8 +134,11 @@ func (w *CrawlWorker) crawl(ctx context.Context, jobID uuid.UUID, biz dbgen.GetB
 			if copyErr != nil {
 				return 0, copyErr
 			}
+			if _, copyErr := d.Ingestor.CopySocialsFrom(ctx, siblingID, biz.ID); copyErr != nil {
+				return copied, copyErr
+			}
 			d.logLine(ctx, jobID, events.LevelInfo,
-				"reused %d address(es) for %s from a crawl in the last %d days",
+				"reused %d address(es) for %s from a crawl of the same page in the last %d days",
 				copied, *biz.Domain, d.Config.RecrawlAfterDays)
 			return copied, nil
 		case !errors.Is(err, pgx.ErrNoRows):
@@ -106,7 +146,17 @@ func (w *CrawlWorker) crawl(ctx context.Context, jobID uuid.UUID, biz dbgen.GetB
 		}
 	}
 
-	result, crawlErr := d.Crawler.CrawlSite(ctx, *biz.Website)
+	// Only the fetches run on the site budget. Storing what they found uses the job's
+	// context, so a site that ran out of time still keeps the addresses it gave up.
+	siteCtx, cancel := context.WithTimeout(ctx, crawlSiteBudget)
+	result, crawlErr := d.Crawler.CrawlSite(siteCtx, *biz.Website)
+	cancel()
+	// Social profiles are kept whatever else the crawl found, including for a
+	// business whose website is itself a social profile and so was not fetched.
+	// A failure here is logged, not returned: it must not cost the emails below.
+	if err := w.saveSocials(ctx, jobID, biz.ID, result); err != nil {
+		d.logLine(ctx, jobID, events.LevelWarn, "could not store social profiles for %s: %v", displayDomain(biz), err)
+	}
 	if result.Skipped != crawler.SkipNone {
 		d.logLine(ctx, jobID, events.LevelDebug, "skipped %s (%s)", displayDomain(biz), result.Skipped)
 		return 0, nil
@@ -139,8 +189,40 @@ func (w *CrawlWorker) crawl(ctx context.Context, jobID uuid.UUID, biz dbgen.GetB
 	return stored, crawlErr
 }
 
+// saveSocials stores the social profiles a crawl found.
+func (w *CrawlWorker) saveSocials(ctx context.Context, jobID, businessID uuid.UUID, result crawler.SiteResult) error {
+	if len(result.Socials) == 0 {
+		return nil
+	}
+	found := make([]business.FoundSocial, 0, len(result.Socials))
+	for _, link := range result.Socials {
+		found = append(found, business.FoundSocial{
+			Network: string(link.Network),
+			Handle:  link.Handle,
+			URL:     link.URL,
+			PageURL: link.PageURL,
+		})
+	}
+	stored, err := w.deps.Ingestor.SaveSocials(ctx, businessID, found)
+	if err != nil {
+		return err
+	}
+	if stored > 0 {
+		w.deps.logLine(ctx, jobID, events.LevelDebug, "found %d social profile(s) for %s", stored, result.Domain)
+	}
+	return nil
+}
+
 // finishSite records the visit and advances the pipeline when the last site is done.
+//
+// It runs on a context detached from the job's. By the time it is called the site
+// has been dealt with, and losing this write to a deadline is what strands a job
+// short of its total: the retry crawls the same slow site into the same deadline,
+// and once the attempts are spent nothing counts the site at all.
 func (d *Deps) finishSite(ctx context.Context, jobID, businessID uuid.UUID, emailsStored int) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), crawlBookkeepingTimeout)
+	defer cancel()
+
 	if err := d.Store.MarkBusinessCrawled(ctx, businessID); err != nil {
 		return fmt.Errorf("jobs: mark business crawled: %w", err)
 	}

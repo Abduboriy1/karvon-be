@@ -33,6 +33,8 @@ func NewService(store *db.Store) *Service {
 type ListResult struct {
 	Rows  []db.BusinessRow
 	Total int64
+	// Socials holds each listed business's social profiles, keyed by business id.
+	Socials map[uuid.UUID][]dbgen.BusinessSocial
 }
 
 // List returns a filtered, sorted page.
@@ -45,16 +47,41 @@ func (s *Service) List(ctx context.Context, filter db.BusinessFilter, sort strin
 	if err != nil {
 		return ListResult{}, apperr.Internal(err)
 	}
-	return ListResult{Rows: rows, Total: total}, nil
+	socials, err := s.socialsFor(ctx, rows)
+	if err != nil {
+		return ListResult{}, apperr.Internal(err)
+	}
+	return ListResult{Rows: rows, Total: total, Socials: socials}, nil
 }
 
-// Detail is a business with every address it has.
+// socialsFor loads the social profiles of a page of businesses in one query.
+func (s *Service) socialsFor(ctx context.Context, rows []db.BusinessRow) (map[uuid.UUID][]dbgen.BusinessSocial, error) {
+	out := make(map[uuid.UUID][]dbgen.BusinessSocial, len(rows))
+	if len(rows) == 0 {
+		return out, nil
+	}
+	ids := make([]uuid.UUID, len(rows))
+	for i, row := range rows {
+		ids[i] = row.ID
+	}
+	socials, err := s.store.ListSocialsForBusinesses(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, social := range socials {
+		out[social.BusinessID] = append(out[social.BusinessID], social)
+	}
+	return out, nil
+}
+
+// Detail is a business with every address and social profile it has.
 type Detail struct {
 	Business dbgen.GetBusinessRow
 	Emails   []dbgen.ListBusinessEmailsWithVerificationRow
+	Socials  []dbgen.BusinessSocial
 }
 
-// Get returns one business with its addresses.
+// Get returns one business with its addresses and social profiles.
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (Detail, error) {
 	row, err := s.store.GetBusiness(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -67,7 +94,11 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (Detail, error) {
 	if err != nil {
 		return Detail{}, apperr.Internal(err)
 	}
-	return Detail{Business: row, Emails: emails}, nil
+	socials, err := s.store.ListBusinessSocials(ctx, id)
+	if err != nil {
+		return Detail{}, apperr.Internal(err)
+	}
+	return Detail{Business: row, Emails: emails, Socials: socials}, nil
 }
 
 // UpdateInput carries the patchable fields. SetNotes distinguishes "clear the note"

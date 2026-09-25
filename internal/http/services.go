@@ -30,7 +30,8 @@ type JobService interface {
 	List(ctx context.Context, filter db.JobFilter, sort string, page, perPage int) (scraper.ListResult, error)
 	Cancel(ctx context.Context, id uuid.UUID) (db.JobRow, error)
 	Rerun(ctx context.Context, id uuid.UUID) (db.JobRow, error)
-	Recrawl(ctx context.Context, id uuid.UUID) (db.JobRow, error)
+	Recrawl(ctx context.Context, id uuid.UUID, targets []string) (db.JobRow, error)
+	RecrawlBusinesses(ctx context.Context, filter db.BusinessFilter, targets []string) (db.JobRow, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 

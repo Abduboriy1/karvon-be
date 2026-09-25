@@ -17,6 +17,8 @@ type Querier interface {
 	ActivateCampaignVariants(ctx context.Context, campaignID uuid.UUID) error
 	AddCampaignSendingAccount(ctx context.Context, arg AddCampaignSendingAccountParams) error
 	AddCampaignVariant(ctx context.Context, arg AddCampaignVariantParams) error
+	// Attaches hand-picked businesses to a re-crawl job.
+	AddJobResults(ctx context.Context, arg AddJobResultsParams) (int64, error)
 	AddVariantComponent(ctx context.Context, arg AddVariantComponentParams) error
 	AdvanceProviderRunIngest(ctx context.Context, arg AdvanceProviderRunIngestParams) error
 	ArchiveCampaign(ctx context.Context, id uuid.UUID) (Campaign, error)
@@ -112,6 +114,10 @@ type Querier interface {
 	FailNewsletterSubscription(ctx context.Context, arg FailNewsletterSubscriptionParams) error
 	FindBusinessByDomain(ctx context.Context, domain *string) (Business, error)
 	FindBusinessByPhoneZip(ctx context.Context, arg FindBusinessByPhoneZipParams) (Business, error)
+	// A sibling is another listing of the same website, not merely the same domain: a
+	// city or a franchise often hosts one page per location under a single domain, and
+	// each page carries its own address. The key ignores scheme, "www.", the query
+	// string and trailing slashes; business.WebsiteKey computes the argument the same way.
 	FindFreshCrawledSibling(ctx context.Context, arg FindFreshCrawledSiblingParams) (uuid.UUID, error)
 	FinishSyncRun(ctx context.Context, arg FinishSyncRunParams) error
 	GetAIGeneration(ctx context.Context, id uuid.UUID) (AiGeneration, error)
@@ -156,6 +162,8 @@ type Querier interface {
 	GetVerificationSettings(ctx context.Context) (VerificationSetting, error)
 	InsertBusiness(ctx context.Context, arg InsertBusinessParams) (Business, error)
 	InsertBusinessEmail(ctx context.Context, arg InsertBusinessEmailParams) (BusinessEmail, error)
+	// A profile already recorded for the business keeps its first page_url.
+	InsertBusinessSocial(ctx context.Context, arg InsertBusinessSocialParams) (int64, error)
 	InsertCampaignLead(ctx context.Context, arg InsertCampaignLeadParams) (CampaignLead, error)
 	InsertContactEvent(ctx context.Context, arg InsertContactEventParams) (ContactEvent, error)
 	InsertJobEvent(ctx context.Context, arg InsertJobEventParams) (InsertJobEventRow, error)
@@ -181,6 +189,7 @@ type Querier interface {
 	// addresses that have never been through Pass 1.
 	ListBusinessEmailsWithVerification(ctx context.Context, businessID uuid.UUID) ([]ListBusinessEmailsWithVerificationRow, error)
 	ListBusinessIDsForEmail(ctx context.Context, email string) ([]uuid.UUID, error)
+	ListBusinessSocials(ctx context.Context, businessID uuid.UUID) ([]BusinessSocial, error)
 	ListBusinessesForEmail(ctx context.Context, email string) ([]ListBusinessesForEmailRow, error)
 	ListCampaignAnalyticsSnapshots(ctx context.Context, arg ListCampaignAnalyticsSnapshotsParams) ([]CampaignAnalyticsSnapshot, error)
 	ListCampaignLeadContactIDs(ctx context.Context, campaignID uuid.UUID) ([]uuid.UUID, error)
@@ -199,7 +208,8 @@ type Querier interface {
 	ListEmailSendsForLead(ctx context.Context, campaignLeadID uuid.UUID) ([]EmailSend, error)
 	ListEmailVariants(ctx context.Context, arg ListEmailVariantsParams) ([]EmailVariant, error)
 	ListEmailVariantsByIDs(ctx context.Context, ids []uuid.UUID) ([]EmailVariant, error)
-	ListJobCrawlTargets(ctx context.Context, jid uuid.UUID) ([]ListJobCrawlTargetsRow, error)
+	// The job's businesses with a website that still lack what the crawl looks for.
+	ListJobCrawlTargets(ctx context.Context, arg ListJobCrawlTargetsParams) ([]ListJobCrawlTargetsRow, error)
 	ListJobEventsAfter(ctx context.Context, arg ListJobEventsAfterParams) ([]JobEvent, error)
 	ListJobQueries(ctx context.Context, jobID uuid.UUID) ([]JobQuery, error)
 	ListNewsletterAudiences(ctx context.Context) ([]NewsletterAudience, error)
@@ -220,6 +230,8 @@ type Querier interface {
 	ListSendingAccountStatsDaily(ctx context.Context, arg ListSendingAccountStatsDailyParams) ([]SendingAccountStatsDaily, error)
 	ListSendingAccounts(ctx context.Context, arg ListSendingAccountsParams) ([]SendingAccount, error)
 	ListSendingAccountsByIDs(ctx context.Context, ids []uuid.UUID) ([]SendingAccount, error)
+	// One round trip for a whole page of the business list.
+	ListSocialsForBusinesses(ctx context.Context, businessIds []uuid.UUID) ([]BusinessSocial, error)
 	ListSources(ctx context.Context) ([]Source, error)
 	ListSyncRuns(ctx context.Context, arg ListSyncRunsParams) ([]SyncRun, error)
 	ListVariantAssignmentsForLead(ctx context.Context, campaignLeadID uuid.UUID) ([]VariantAssignment, error)
@@ -255,6 +267,9 @@ type Querier interface {
 	MarkVerificationRunTerminal(ctx context.Context, arg MarkVerificationRunTerminalParams) error
 	// A webhook or a reconcile telling us what Mailchimp now says.
 	MirrorNewsletterSubscriptionStatus(ctx context.Context, arg MirrorNewsletterSubscriptionStatusParams) (NewsletterSubscription, error)
+	// A job row needs a source even when it never searches. Prefer the Maps source that
+	// first found one of the businesses, then the oldest Maps source.
+	PickRecrawlSource(ctx context.Context, businessIds []uuid.UUID) (uuid.UUID, error)
 	PruneJobEvents(ctx context.Context, maxAgeDays int32) (int64, error)
 	RecomputeCampaignCounts(ctx context.Context, id uuid.UUID) (Campaign, error)
 	RecomputeJobStats(ctx context.Context, jid uuid.UUID) (RecomputeJobStatsRow, error)

@@ -58,6 +58,16 @@ type PaidBand struct {
 // PaidBandOf reads the band out of the settings.
 func PaidBandOf(s Settings) PaidBand { return PaidBand{Min: s.PaidMinScore, Max: s.PaidThreshold} }
 
+// PaidBandFor is the band a run applies: the settings' band, without its floor when
+// the run is a single address the operator asked for explicitly.
+func PaidBandFor(s Settings, filter RunFilter) PaidBand {
+	band := PaidBandOf(s)
+	if filter.SkipScoreFloor {
+		band.Min = 0
+	}
+	return band
+}
+
 // apply narrows a data-layer filter to the band.
 func (b PaidBand) apply(filter *db.VerificationFilter) {
 	minScore, maxScore := b.Min, b.Max
@@ -385,15 +395,16 @@ func (s *Service) EstimateRun(ctx context.Context, pass Pass, filter RunFilter) 
 		return out, nil
 	}
 
+	band := PaidBandFor(settings, filter)
 	qualifying := base
-	PaidBandOf(settings).apply(&qualifying)
+	band.apply(&qualifying)
 	qualifying.FreeComplete = &complete
 	qualifying.ThirdPartySent = &notSent
 
 	// What the run would skip because those addresses have already had their one
 	// send. They are inside the band and will still never be sent again.
 	spentFilter := base
-	PaidBandOf(settings).apply(&spentFilter)
+	band.apply(&spentFilter)
 	spentFilter.FreeComplete = &complete
 	spentFilter.ThirdPartySent = &sent
 
@@ -624,6 +635,9 @@ func (s *Service) VerifyOne(ctx context.Context, id uuid.UUID, pass Pass) (dbgen
 		Filter: RunFilter{Scope: ScopeSelection, IDs: []uuid.UUID{id}, IncludeSuppressed: true},
 	}
 	if pass == PassThirdParty {
+		input.Filter.SkipScoreFloor = true
+	}
+	if pass == PassThirdParty {
 		source, err := s.verifierSource(ctx)
 		if err != nil {
 			return dbgen.VerificationRun{}, apperr.Validation("the verifier is not ready",
@@ -638,6 +652,9 @@ func (s *Service) VerifyOne(ctx context.Context, id uuid.UUID, pass Pass) (dbgen
 
 // checkGate rejects a paid verification the pipeline would refuse anyway, so the
 // operator gets a clear reason instead of a run that skips its only item.
+//
+// The band's floor is deliberately not checked: a single address the operator asked
+// for by hand may be sent however low the free checks scored it.
 func (s *Service) checkGate(ctx context.Context, row dbgen.EmailVerification) error {
 	// The one-send rule is checked before anything else, because it is the only
 	// condition here that no setting, band or retry can ever lift.
@@ -654,10 +671,6 @@ func (s *Service) checkGate(ctx context.Context, row dbgen.EmailVerification) er
 		return apperr.Conflict("this address has not been through the free checks yet; run them first")
 	}
 	band := PaidBandOf(settings)
-	if int(row.FreeScore) < band.Min {
-		return apperr.Conflict("the free checks scored %d, below the %d needed for a paid check",
-			row.FreeScore, band.Min)
-	}
 	if int(row.FreeScore) >= band.Max {
 		return apperr.Conflict(
 			"the free checks already scored %d, at or above the %d confidence threshold; a paid check would add nothing",

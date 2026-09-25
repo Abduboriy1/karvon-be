@@ -56,13 +56,19 @@ func (w *RecrawlWorker) Work(ctx context.Context, rj *river.Job[scraper.RecrawlA
 	if err != nil {
 		return fmt.Errorf("jobs: count job results: %w", err)
 	}
+	looking := "emails"
+	if emails, socials := cfg.CrawlTargets(); emails && socials {
+		looking = "emails or social profiles"
+	} else if socials {
+		looking = "social profiles"
+	}
 	if cfg.RecrawlOf != nil {
 		d.logLine(ctx, jobID, events.LevelInfo,
-			"re-crawling the websites of %d business(es) from job %s; no provider search is run",
-			results, cfg.RecrawlOf)
+			"re-crawling the websites of %d business(es) from job %s for missing %s; no provider search is run",
+			results, cfg.RecrawlOf, looking)
 	} else {
 		d.logLine(ctx, jobID, events.LevelInfo,
-			"re-crawling the websites of %d business(es); no provider search is run", results)
+			"re-crawling the websites of %d business(es) for missing %s; no provider search is run", results, looking)
 	}
 
 	// No queries exist for this job, so the query stage counts as complete and the

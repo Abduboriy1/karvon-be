@@ -53,7 +53,11 @@ func NewFetcher(cfg FetcherConfig) *Fetcher {
 			TLSHandshakeTimeout:   5 * time.Second,
 			ResponseHeaderTimeout: cfg.Timeout,
 			MaxIdleConnsPerHost:   2,
-			DisableKeepAlives:     false,
+			// A crawl touches thousands of distinct hosts once each, so idle
+			// connections are capped and dropped quickly rather than piling up.
+			MaxIdleConns:      200,
+			IdleConnTimeout:   30 * time.Second,
+			DisableKeepAlives: false,
 		}
 	}
 

@@ -178,9 +178,24 @@ func (s *Server) RerunJob(w http.ResponseWriter, r *http.Request, id gen.IdPath)
 	s.writeJob(w, r, http.StatusCreated, row)
 }
 
-// RecrawlJob implements POST /jobs/{id}/recrawl.
+// recrawlRequest is the optional body of POST /jobs/{id}/recrawl.
+type recrawlRequest struct {
+	Targets []string `json:"targets" validate:"omitempty,max=2,dive,oneof=emails socials"`
+}
+
+// RecrawlJob implements POST /jobs/{id}/recrawl. The body is optional; without one
+// the re-crawl looks for emails, as it always has.
 func (s *Server) RecrawlJob(w http.ResponseWriter, r *http.Request, id gen.IdPath) {
-	row, err := s.jobs.Recrawl(r.Context(), id)
+	var req recrawlRequest
+	if err := decodeJSONIfPresent(r, &req); err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	if err := validateStruct(req); err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	row, err := s.jobs.Recrawl(r.Context(), id, req.Targets)
 	if err != nil {
 		WriteError(w, r, err)
 		return

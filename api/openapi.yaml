@@ -304,12 +304,19 @@ paths:
     post:
       tags: [jobs]
       operationId: recrawlJob
-      summary: Re-crawl a finished job's websites for emails without a new provider search
+      summary: Re-crawl a finished job's websites without a new provider search
       description: |
         Creates a new job that owns the same businesses as the source job and enters
         the pipeline at the crawl stage. No Google Maps query is sent to the provider
-        and nothing is billed. Businesses that already carry an address are skipped;
-        the rest have their websites fetched again. The source job must have finished.
+        and nothing is billed. A business is revisited when it lacks any of the
+        requested targets (emails by default); the rest are skipped. Every revisited
+        website is fetched fresh, never reused from an earlier crawl. The source job
+        must have finished.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RecrawlJobRequest' }
       responses:
         '201':
           description: New re-crawl job
@@ -481,6 +488,36 @@ paths:
               schema: { $ref: '#/components/schemas/BulkResult' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /businesses/recrawl:
+    post:
+      tags: [businesses]
+      operationId: recrawlBusinesses
+      summary: Re-crawl selected or filtered businesses for emails and/or social profiles
+      description: |
+        Creates a re-crawl job for exactly `ids`, or for every business matching the
+        filters when `ids` is absent. No provider search runs and nothing is billed. A
+        business is revisited when it lacks any of `targets`, and its website is
+        fetched fresh. At most 20000 businesses per request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessRecrawlRequest' }
+      responses:
+        '201':
+          description: New re-crawl job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: No business matches, or no Google Maps source exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /businesses/export:
@@ -2769,12 +2806,17 @@ components:
             area, which is how a whole state is covered; spend is then bounded by the
             provider's per-run charge cap rather than by this number.
         crawl_emails: { type: boolean, default: true }
-        concurrency: { type: integer, minimum: 1, maximum: 32, default: 8 }
+        concurrency: { type: integer, minimum: 1, maximum: 100, default: 8 }
         recrawl_of:
           type: string
           format: uuid
           readOnly: true
-          description: Set on a re-crawl job; the job whose businesses were copied in.
+          description: Set on a re-crawl of a job; the job whose businesses were copied in.
+        recrawl_targets:
+          type: array
+          readOnly: true
+          items: { $ref: '#/components/schemas/RecrawlTarget' }
+          description: Set on every re-crawl job; what it looked for.
       additionalProperties: false
 
     JobCreate:
@@ -2867,6 +2909,29 @@ components:
         typo_suggestion: { type: string, nullable: true }
         found_at: { type: string, format: date-time }
 
+    SocialNetwork:
+      type: string
+      enum: [facebook, instagram, tiktok, youtube, linkedin, x, threads, pinterest, yelp, linktree]
+
+    BusinessSocial:
+      type: object
+      description: A social profile the business's website links to, found by the crawl stage.
+      required: [id, network, handle, url, found_at]
+      properties:
+        id: { type: string, format: uuid }
+        network: { $ref: '#/components/schemas/SocialNetwork' }
+        handle:
+          type: string
+          description: The profile's identifier on its network, e.g. "tahcrossfit" or "company/acme".
+        url:
+          type: string
+          description: Canonical profile URL.
+        page_url:
+          type: string
+          nullable: true
+          description: The website page the link was found on; null when the business's own website is the profile.
+        found_at: { type: string, format: date-time }
+
     Business:
       type: object
       required: [id, name, suppressed, created_at, updated_at]
@@ -2899,6 +2964,10 @@ components:
           description: Tag of the primary address, null until it has been verified
         primary_email_verification_score: { type: integer, nullable: true }
         emails_count: { type: integer }
+        socials:
+          type: array
+          description: Social profiles the business's website links to.
+          items: { $ref: '#/components/schemas/BusinessSocial' }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
@@ -2970,6 +3039,49 @@ components:
           maxItems: 5000
           items: { type: string, format: uuid }
           description: When present, exports exactly these rows and ignores the filters
+      additionalProperties: false
+
+    RecrawlTarget:
+      type: string
+      enum: [emails, socials]
+      description: What a re-crawl looks for; a business lacking it is revisited.
+
+    RecrawlJobRequest:
+      type: object
+      properties:
+        targets:
+          type: array
+          maxItems: 2
+          items: { $ref: '#/components/schemas/RecrawlTarget' }
+          description: Defaults to ["emails"].
+      additionalProperties: false
+
+    BusinessRecrawlRequest:
+      type: object
+      description: The same selection as BusinessExportRequest, plus what to look for.
+      required: [targets]
+      properties:
+        targets:
+          type: array
+          minItems: 1
+          maxItems: 2
+          items: { $ref: '#/components/schemas/RecrawlTarget' }
+        job_id: { type: string, format: uuid }
+        category: { type: string, maxLength: 200 }
+        state: { type: string, maxLength: 100 }
+        city: { type: string, maxLength: 200 }
+        has_email: { type: boolean }
+        suppressed: { type: boolean }
+        q: { type: string, maxLength: 200 }
+        email_source: { $ref: '#/components/schemas/EmailSource' }
+        verification_tag:
+          type: array
+          items: { $ref: '#/components/schemas/VerificationTag' }
+        ids:
+          type: array
+          maxItems: 5000
+          items: { type: string, format: uuid }
+          description: When present, re-crawls exactly these businesses and ignores the filters
       additionalProperties: false
 
     ScraperStatsJobEmails:

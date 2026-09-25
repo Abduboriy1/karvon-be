@@ -60,10 +60,12 @@ func TestCheckGate(t *testing.T) {
 			wantSub: "free checks",
 		},
 		{
-			name:    "below the floor",
-			row:     dbgen.EmailVerification{FreeScoredAt: &now, FreeScore: 40},
-			wantErr: true,
-			wantSub: "below",
+			name: "below the floor: a hand-picked address is paid for however low it scored",
+			row:  dbgen.EmailVerification{FreeScoredAt: &now, FreeScore: 40},
+		},
+		{
+			name: "a disqualified address can still be checked by hand",
+			row:  dbgen.EmailVerification{FreeScoredAt: &now, FreeScore: 0},
 		},
 		{
 			name: "a high free score is still paid for: it describes the domain, not the mailbox",
@@ -290,5 +292,16 @@ func TestDecodeChecksToleratesAnEmptyDocument(t *testing.T) {
 
 	if _, err := DecodeChecks([]byte(`not json`)); err == nil {
 		t.Error("a corrupt breakdown was accepted")
+	}
+}
+
+func TestPaidBandForLiftsOnlyTheFloor(t *testing.T) {
+	settings := Settings{PaidMinScore: 50, PaidThreshold: 90}
+
+	if got := PaidBandFor(settings, RunFilter{}); got != (PaidBand{Min: 50, Max: 90}) {
+		t.Fatalf("a bulk run's band = %+v, want the settings' band", got)
+	}
+	if got := PaidBandFor(settings, RunFilter{SkipScoreFloor: true}); got != (PaidBand{Min: 0, Max: 90}) {
+		t.Fatalf("a single-address band = %+v, want the floor lifted and the ceiling kept", got)
 	}
 }

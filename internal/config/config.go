@@ -265,8 +265,8 @@ func (c Config) Validate() error {
 	case c.IsProduction() && isPlaceholderSecret(c.SecretKey):
 		errs = append(errs, errors.New(EnvPrefix+"SECRET_KEY is still the development placeholder; generate one with `make secret`"))
 	}
-	if c.CrawlConcurrency < 1 || c.CrawlConcurrency > 64 {
-		errs = append(errs, errors.New(EnvPrefix+"CRAWL_CONCURRENCY must be between 1 and 64"))
+	if c.CrawlConcurrency < 1 || c.CrawlConcurrency > 200 {
+		errs = append(errs, errors.New(EnvPrefix+"CRAWL_CONCURRENCY must be between 1 and 200"))
 	}
 	if c.QueryConcurrency < 1 || c.QueryConcurrency > 64 {
 		errs = append(errs, errors.New(EnvPrefix+"QUERY_CONCURRENCY must be between 1 and 64"))

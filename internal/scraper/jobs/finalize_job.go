@@ -78,6 +78,13 @@ func (w *FinalizeWorker) Work(ctx context.Context, rj *river.Job[scraper.Finaliz
 		// carried over rather than recomputed.
 		CostCents: current.CostCents,
 	}
+	if computed.QueriesTotal == 0 {
+		// A re-crawl's site counters cover only the sites it set out to visit (see
+		// advanceAfterQueries). The table recount would fold the job's already-served
+		// businesses back in and jump the finished figures away from the live ones.
+		final.SitesTotal = current.SitesTotal
+		final.SitesCrawled = current.SitesCrawled
+	}
 	if err := d.saveStats(ctx, jobID, final); err != nil {
 		return err
 	}

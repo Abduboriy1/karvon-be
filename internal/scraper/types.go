@@ -27,7 +27,7 @@ const (
 	MaxTerms       = 20
 	MaxLocations   = 300
 	MaxPerQueryCap = 1000
-	MaxConcurrency = 32
+	MaxConcurrency = 100
 	MaxNameLen     = 200
 	MaxTermLen     = 120
 	MaxCityLen     = 120
@@ -88,11 +88,71 @@ type Config struct {
 	// RecrawlOf is set on a re-crawl job: the job whose businesses were copied so
 	// their websites could be crawled again without another provider search.
 	RecrawlOf *uuid.UUID `json:"recrawl_of,omitempty"`
+	// RecrawlTargets is set on every re-crawl job: what the crawl is looking for.
+	// A business is revisited when it lacks any of them. A re-crawl of hand-picked
+	// businesses carries targets but no RecrawlOf, and no terms or locations.
+	RecrawlTargets []string `json:"recrawl_targets,omitempty"`
 }
 
-// IsRecrawl reports whether the job re-crawls another job's businesses instead of
+// Re-crawl targets.
+const (
+	// RecrawlTargetEmails revisits businesses that have no email address.
+	RecrawlTargetEmails = "emails"
+	// RecrawlTargetSocials revisits businesses that have no social profile.
+	RecrawlTargetSocials = "socials"
+)
+
+// IsRecrawl reports whether the job re-crawls existing businesses instead of
 // running provider searches.
-func (c Config) IsRecrawl() bool { return c.RecrawlOf != nil }
+func (c Config) IsRecrawl() bool { return c.RecrawlOf != nil || len(c.RecrawlTargets) > 0 }
+
+// CrawlTargets reports which businesses the crawl stage visits: those without an
+// email, those without a social profile, or either. A search job and a re-crawl
+// written before targets existed look for emails only.
+func (c Config) CrawlTargets() (emails, socials bool) {
+	if len(c.RecrawlTargets) == 0 {
+		return true, false
+	}
+	for _, target := range c.RecrawlTargets {
+		switch target {
+		case RecrawlTargetEmails:
+			emails = true
+		case RecrawlTargetSocials:
+			socials = true
+		}
+	}
+	return emails, socials
+}
+
+// NormalizeRecrawlTargets validates and deduplicates requested re-crawl targets.
+// None means emails, which is what a re-crawl did before targets existed.
+func NormalizeRecrawlTargets(targets []string) ([]string, error) {
+	if len(targets) == 0 {
+		return []string{RecrawlTargetEmails}, nil
+	}
+	var emails, socials bool
+	for i, target := range targets {
+		switch strings.ToLower(strings.TrimSpace(target)) {
+		case RecrawlTargetEmails:
+			emails = true
+		case RecrawlTargetSocials:
+			socials = true
+		default:
+			return nil, apperr.Validation("re-crawl targets are invalid", apperr.FieldError{
+				Field:   fmt.Sprintf("targets[%d]", i),
+				Message: `must be "emails" or "socials"`,
+			})
+		}
+	}
+	out := make([]string, 0, 2)
+	if emails {
+		out = append(out, RecrawlTargetEmails)
+	}
+	if socials {
+		out = append(out, RecrawlTargetSocials)
+	}
+	return out, nil
+}
 
 // Stats is the live progress snapshot stored as JSONB on the job.
 type Stats struct {
@@ -201,6 +261,8 @@ func (c Config) Normalize() Config {
 		CrawlEmails: c.CrawlEmails,
 		Concurrency: c.Concurrency,
 		RecrawlOf:   c.RecrawlOf,
+
+		RecrawlTargets: c.RecrawlTargets,
 	}
 
 	seenTerm := make(map[string]struct{}, len(c.Terms))
