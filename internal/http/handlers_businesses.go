@@ -51,6 +51,7 @@ func (s *Server) ListBusinesses(w http.ResponseWriter, r *http.Request, params g
 		Q:          params.Q,
 		HasEmail:   params.HasEmail,
 		Suppressed: params.Suppressed,
+		Excluded:   params.Excluded,
 	}
 	if params.EmailSource != nil {
 		source := string(*params.EmailSource)

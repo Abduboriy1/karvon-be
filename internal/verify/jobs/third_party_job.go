@@ -60,6 +60,14 @@ func (w *ThirdPartyWorker) Work(ctx context.Context, rj *river.Job[verify.ThirdP
 		return d.finishItem(ctx, runID, verificationID, verify.ItemFailed, 0, err.Error())
 	}
 
+	// The exclusion is checked before anything is claimed or spent, and before the
+	// other reasons, so a skipped item says why it will never be sent.
+	if skip, err := d.exclusionSkip(ctx, row.Email); err != nil || skip != "" {
+		if err != nil {
+			return err
+		}
+		return d.finishItem(ctx, runID, verificationID, verify.ItemSkipped, 0, skip)
+	}
 	if reason := d.skipReason(ctx, row, filter); reason != "" {
 		return d.finishItem(ctx, runID, verificationID, verify.ItemSkipped, 0, reason)
 	}

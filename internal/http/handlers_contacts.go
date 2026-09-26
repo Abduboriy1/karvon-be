@@ -15,6 +15,7 @@ func (s *Server) ListContacts(w http.ResponseWriter, r *http.Request, params gen
 	filter := db.ContactFilter{
 		Suppressed: params.Suppressed,
 		HasConsent: params.HasConsent,
+		Excluded:   params.Excluded,
 		CampaignID: params.CampaignId,
 		Q:          params.Q,
 	}

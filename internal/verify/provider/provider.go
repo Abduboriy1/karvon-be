@@ -10,8 +10,14 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrPaused marks a provider that deliberately did not call its backend because a
+// circuit breaker is open. The outage was already reported once when the breaker
+// opened, so callers should not report it again for every address.
+var ErrPaused = errors.New("backend is unavailable, circuit is open")
 
 // Key identifies a provider. It is persisted inside provider_results and used as the
 // settings weight key, so renaming one is a data migration rather than a refactor.

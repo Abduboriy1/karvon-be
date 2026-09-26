@@ -79,6 +79,11 @@ type Detail struct {
 	Business dbgen.GetBusinessRow
 	Emails   []dbgen.ListBusinessEmailsWithVerificationRow
 	Socials  []dbgen.BusinessSocial
+	// Exclusion is the global exclusion rule covering the business, or nil.
+	Exclusion *db.ExclusionRef
+	// EmailExclusions holds the rule covering each excluded address, keyed by the
+	// lower-cased address.
+	EmailExclusions map[string]db.ExclusionRef
 }
 
 // Get returns one business with its addresses and social profiles.
@@ -98,7 +103,19 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (Detail, error) {
 	if err != nil {
 		return Detail{}, apperr.Internal(err)
 	}
-	return Detail{Business: row, Emails: emails, Socials: socials}, nil
+	exclusion, err := s.store.MatchBusiness(ctx, id)
+	if err != nil {
+		return Detail{}, apperr.Internal(err)
+	}
+	addresses := make([]string, 0, len(emails))
+	for _, e := range emails {
+		addresses = append(addresses, e.Email)
+	}
+	emailExclusions, err := s.store.ExcludedEmails(ctx, addresses)
+	if err != nil {
+		return Detail{}, apperr.Internal(err)
+	}
+	return Detail{Business: row, Emails: emails, Socials: socials, Exclusion: exclusion, EmailExclusions: emailExclusions}, nil
 }
 
 // UpdateInput carries the patchable fields. SetNotes distinguishes "clear the note"

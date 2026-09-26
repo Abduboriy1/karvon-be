@@ -26,6 +26,7 @@ const (
 	KindNewsletterPush          = "newsletter_push_member"
 	KindNewsletterSyncMembers   = "newsletter_sync_members"
 	KindNewsletterSyncAudiences = "newsletter_sync_audiences"
+	KindExclusionSweep          = "campaign_exclusion_sweep"
 )
 
 // Newsletter push actions.
@@ -102,6 +103,24 @@ func (RemoveLeadArgs) Kind() string { return KindRemoveLead }
 // InsertOpts implements river.JobArgsWithInsertOpts.
 func (RemoveLeadArgs) InsertOpts() river.InsertOpts {
 	return opts(queue.QueueCampaignPush, 3, nil)
+}
+
+// ExclusionSweepArgs applies a change to the global exclusion list to campaign
+// leads: live leads a rule now covers stop (and leave Instantly when they were
+// pushed), and leads a removed rule took out that never reached the provider go
+// back to pending. The sweep reads the whole list, so any one job brings every
+// lead up to date; ExclusionID only makes each change its own job.
+type ExclusionSweepArgs struct {
+	ExclusionID uuid.UUID `json:"exclusion_id" river:"unique"`
+	Removed     bool      `json:"removed" river:"unique"`
+}
+
+// Kind implements river.JobArgs.
+func (ExclusionSweepArgs) Kind() string { return KindExclusionSweep }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (ExclusionSweepArgs) InsertOpts() river.InsertOpts {
+	return opts(queue.QueueCampaignPush, 10, nil)
 }
 
 // ProcessEventArgs applies one stored provider event.

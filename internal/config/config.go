@@ -137,6 +137,10 @@ type Config struct {
 	// VerifyReacherConcurrency caps in-flight requests so we never outrun the
 	// backend's own throttle.
 	VerifyReacherConcurrency int `env:"VERIFY_REACHER_CONCURRENCY" envDefault:"4"`
+	// VerifyReacherRatePerMinute paces requests to Reacher. Keep it at or below
+	// the backend's RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE, or the backend answers
+	// 429 and the breaker opens. 0 disables the limit.
+	VerifyReacherRatePerMinute int `env:"VERIFY_REACHER_RATE_PER_MINUTE" envDefault:"100"`
 	// VerifyReacherBreakerThreshold is how many consecutive failures pause calls to
 	// Reacher, so a backend that is simply down costs one connection attempt per
 	// cooldown rather than one per address. 0 disables the breaker.

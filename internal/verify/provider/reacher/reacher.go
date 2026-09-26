@@ -31,6 +31,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
+
 	"github.com/bory/karvon-be/internal/verify/provider"
 )
 
@@ -76,6 +78,10 @@ type Config struct {
 	// Concurrency caps in-flight requests, so we never outrun the backend's own
 	// throttle. Zero or less means 4.
 	Concurrency int
+	// RatePerMinute caps requests started per minute, retries included. Keep it at
+	// or below the backend's RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: above it the
+	// backend answers 429 and the breaker opens. Zero or less means no limit.
+	RatePerMinute int
 	// BreakerThreshold is how many consecutive failures open the circuit. Zero or
 	// less disables the breaker.
 	BreakerThreshold int
@@ -101,6 +107,8 @@ type Client struct {
 
 	// sem bounds in-flight requests.
 	sem chan struct{}
+	// limiter paces requests under the backend's throttle; nil when unlimited.
+	limiter *rate.Limiter
 
 	mu       sync.Mutex
 	failures int
@@ -109,7 +117,12 @@ type Client struct {
 
 // ErrCircuitOpen is returned while the breaker is open. It is not a verification
 // failure: the address is simply scored without Reacher.
-var ErrCircuitOpen = errors.New("reacher: backend is unavailable, circuit is open")
+var ErrCircuitOpen = fmt.Errorf("reacher: %w", provider.ErrPaused)
+
+// errBackpressure marks a call that timed out waiting on our own concurrency or
+// rate limit. The backend was never asked, so it says nothing about its health and
+// must not count towards the breaker.
+var errBackpressure = errors.New("reacher: local backpressure")
 
 // New builds a client. It never fails: a misconfigured client reports every address
 // as unavailable rather than preventing the service from starting.
@@ -144,12 +157,20 @@ func New(cfg Config) *Client {
 		httpClient = &http.Client{}
 	}
 
+	var limiter *rate.Limiter
+	if cfg.RatePerMinute > 0 {
+		// A burst of one: the backend counts a rolling minute, so letting a burst
+		// through on top of the steady rate would overshoot it.
+		limiter = rate.NewLimiter(rate.Every(time.Minute/time.Duration(cfg.RatePerMinute)), 1)
+	}
+
 	return &Client{
-		cfg:  cfg,
-		http: httpClient,
-		log:  cfg.Log,
-		now:  cfg.Now,
-		sem:  make(chan struct{}, cfg.Concurrency),
+		cfg:     cfg,
+		http:    httpClient,
+		log:     cfg.Log,
+		now:     cfg.Now,
+		sem:     make(chan struct{}, cfg.Concurrency),
+		limiter: limiter,
 	}
 }
 
@@ -217,7 +238,9 @@ func (c *Client) Check(ctx context.Context, email string) provider.Result {
 
 	resp, err := c.check(ctx, email)
 	if err != nil {
-		c.recordFailure(err)
+		if !errors.Is(err, errBackpressure) {
+			c.recordFailure(err)
+		}
 		return withDuration(c.failureResult(err), c.now().Sub(started))
 	}
 	c.recordSuccess()
@@ -252,7 +275,7 @@ func (c *Client) check(ctx context.Context, email string) (CheckResponse, error)
 	case c.sem <- struct{}{}:
 		defer func() { <-c.sem }()
 	case <-ctx.Done():
-		return CheckResponse{}, fmt.Errorf("reacher: waiting for a request slot: %w", ctx.Err())
+		return CheckResponse{}, fmt.Errorf("reacher: waiting for a request slot: %w: %w", errBackpressure, ctx.Err())
 	}
 
 	var lastErr error
@@ -260,6 +283,14 @@ func (c *Client) check(ctx context.Context, email string) (CheckResponse, error)
 		if attempt > 0 {
 			if err := sleep(ctx, backoff(attempt)); err != nil {
 				return CheckResponse{}, err
+			}
+		}
+		if c.limiter != nil {
+			if err := c.limiter.Wait(ctx); err != nil {
+				// Wait fails early when the deadline would pass first, without
+				// the context being done yet, so name the deadline explicitly.
+				return CheckResponse{}, fmt.Errorf("reacher: waiting for the rate limit: %w: %w",
+					errBackpressure, context.DeadlineExceeded)
 			}
 		}
 		resp, err := c.attempt(ctx, email)
@@ -478,15 +509,17 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("reacher: unexpected status %d: %s", e.code, e.body)
 }
 
-// retryable reports whether repeating the request could plausibly help. A 4xx other
-// than 429 is our mistake and will fail identically every time.
+// retryable reports whether repeating the request could plausibly help. A 4xx is our
+// mistake and will fail identically every time. A 429 is not retried either: the
+// backend's throttle counts a whole minute, so a retry within the backoff only
+// spends more of the quota and deepens the hole.
 func retryable(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return false
 	}
 	var status *statusError
 	if errors.As(err, &status) {
-		return status.code == http.StatusTooManyRequests || status.code >= 500
+		return status.code >= 500
 	}
 	// A transport or decode failure: worth one more go.
 	return true

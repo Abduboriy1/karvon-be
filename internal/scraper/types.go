@@ -24,7 +24,7 @@ const (
 // Limits are the hard bounds on a job config. They are enforced server-side
 // regardless of what the client sends.
 const (
-	MaxTerms       = 20
+	MaxTerms       = 50
 	MaxLocations   = 300
 	MaxPerQueryCap = 1000
 	MaxConcurrency = 100
@@ -253,6 +253,26 @@ func (c Config) EstimatedListings() int {
 // IsUnlimited reports whether the config asks for every place in each area.
 func (c Config) IsUnlimited() bool { return c.MaxPerQuery == MaxPerQueryUnlimited }
 
+// NormalizeTerms collapses whitespace in each term and drops blanks and
+// case-insensitive duplicates, keeping first-seen order.
+func NormalizeTerms(terms []string) []string {
+	var out []string
+	seen := make(map[string]struct{}, len(terms))
+	for _, term := range terms {
+		term = strings.Join(strings.Fields(term), " ")
+		if term == "" {
+			continue
+		}
+		key := strings.ToLower(term)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, term)
+	}
+	return out
+}
+
 // Normalize trims input, drops blanks and duplicates, and applies defaults. It runs
 // before validation so the stored config is always canonical.
 func (c Config) Normalize() Config {
@@ -265,19 +285,7 @@ func (c Config) Normalize() Config {
 		RecrawlTargets: c.RecrawlTargets,
 	}
 
-	seenTerm := make(map[string]struct{}, len(c.Terms))
-	for _, term := range c.Terms {
-		term = strings.Join(strings.Fields(term), " ")
-		if term == "" {
-			continue
-		}
-		key := strings.ToLower(term)
-		if _, dup := seenTerm[key]; dup {
-			continue
-		}
-		seenTerm[key] = struct{}{}
-		out.Terms = append(out.Terms, term)
-	}
+	out.Terms = NormalizeTerms(c.Terms)
 
 	seenLoc := make(map[string]struct{}, len(c.Locations))
 	addLoc := func(city, state string) {

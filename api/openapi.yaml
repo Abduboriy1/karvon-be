@@ -24,6 +24,8 @@ tags:
   - name: system
   - name: stats
   - name: sources
+  - name: scrape-categories
+  - name: exclusions
   - name: jobs
   - name: businesses
   - name: verification
@@ -150,6 +152,232 @@ paths:
         '422': { $ref: '#/components/responses/ValidationFailed' }
         '502':
           description: Provider rejected the key or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /scrape-categories:
+    get:
+      tags: [scrape-categories]
+      operationId: listScrapeCategories
+      summary: List scrape categories, defaults first
+      responses:
+        '200':
+          description: Categories
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ScrapeCategory' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [scrape-categories]
+      operationId: createScrapeCategory
+      summary: Create a scrape category
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScrapeCategoryCreate' }
+      responses:
+        '201':
+          description: Created category
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScrapeCategory' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /scrape-categories/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [scrape-categories]
+      operationId: getScrapeCategory
+      summary: Get a single scrape category
+      responses:
+        '200':
+          description: Category
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScrapeCategory' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [scrape-categories]
+      operationId: updateScrapeCategory
+      summary: Rename a category or replace its terms; defaults are editable too
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScrapeCategoryUpdate' }
+      responses:
+        '200':
+          description: Updated category
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ScrapeCategory' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    delete:
+      tags: [scrape-categories]
+      operationId: deleteScrapeCategory
+      summary: Delete a user-created category (defaults return 409)
+      responses:
+        '204': { description: Deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /exclusions:
+    get:
+      tags: [exclusions]
+      operationId: listExclusions
+      summary: The global exclusion list, with how many records each rule covers
+      parameters:
+        - name: q
+          in: query
+          description: Case-insensitive match on the value as entered, the match key or the reason
+          schema: { type: string, maxLength: 200 }
+        - name: kind
+          in: query
+          description: Repeatable kind filter
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/ExclusionKind' }
+          style: form
+          explode: true
+        - name: status
+          in: query
+          description: Active rules by default; removed rules are kept for audit
+          schema:
+            type: string
+            enum: [active, removed, all]
+            default: active
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: created_at:desc
+            enum: [created_at:desc, created_at:asc, value:asc, value:desc, kind:asc]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated exclusions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GlobalExclusionList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [exclusions]
+      operationId: createExclusion
+      summary: Add a global exclusion
+      description: |
+        The rule applies at once to every existing and future record it matches.
+        Nothing is deleted: matching live campaign leads are taken out of their
+        campaigns (and removed from Instantly when they were already pushed) by a
+        background sweep.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GlobalExclusionCreate' }
+      responses:
+        '201':
+          description: The new rule
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GlobalExclusion' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: An active rule with the same kind and match key already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /exclusions/preview:
+    post:
+      tags: [exclusions]
+      operationId: previewExclusion
+      summary: Normalise a prospective rule and show what it would cover, without saving it
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GlobalExclusionCreate' }
+      responses:
+        '200':
+          description: Preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExclusionPreview' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /exclusions/check:
+    post:
+      tags: [exclusions]
+      operationId: checkExclusion
+      summary: Is this business, address, domain or company globally excluded?
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExclusionCheckRequest' }
+      responses:
+        '200':
+          description: The first matching rule, if any
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExclusionCheckResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /exclusions/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [exclusions]
+      operationId: getExclusion
+      summary: One exclusion rule
+      responses:
+        '200':
+          description: Exclusion
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GlobalExclusion' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [exclusions]
+      operationId: removeExclusion
+      summary: Remove an exclusion
+      description: |
+        The rule is kept as history and stops applying at once. Campaign leads it
+        took out that never reached Instantly go back to pending unless another rule
+        still covers them; leads that were already pushed stay excluded.
+      parameters:
+        - name: note
+          in: query
+          schema: { type: string, maxLength: 1000 }
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The rule was already removed
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -403,6 +631,10 @@ paths:
           in: query
           description: Defaults to false; pass true for only suppressed rows
           schema: { type: boolean }
+        - name: excluded
+          in: query
+          description: Absent lists every row; false hides globally excluded businesses, true lists only them
+          schema: { type: boolean }
         - name: q
           in: query
           description: Trigram search over name and domain
@@ -635,6 +867,10 @@ paths:
         - name: include_suppressed
           in: query
           description: Defaults to false, which hides addresses held only by suppressed businesses
+          schema: { type: boolean }
+        - name: excluded
+          in: query
+          description: Absent lists every row; false hides globally excluded addresses, true lists only them
           schema: { type: boolean }
         - name: sort
           in: query
@@ -1536,6 +1772,10 @@ paths:
         - name: has_consent
           in: query
           description: Whether the contact holds an un-revoked consent record
+          schema: { type: boolean }
+        - name: excluded
+          in: query
+          description: Absent lists every row; false hides globally excluded contacts, true lists only them
           schema: { type: boolean }
         - name: campaign_id
           in: query
@@ -2754,6 +2994,196 @@ components:
         name: { type: string, minLength: 1, maxLength: 100 }
       additionalProperties: false
 
+    ScrapeCategory:
+      type: object
+      description: |
+        A named set of search terms that pre-fills the Create scrape form. Terms are
+        stored normalized: whitespace collapsed, blanks and case-insensitive duplicates
+        dropped.
+      required: [id, name, terms, is_default, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        terms:
+          type: array
+          items: { type: string }
+        is_default: { type: boolean, description: Seeded category; editable but not deletable }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ScrapeCategoryCreate:
+      type: object
+      required: [name, terms]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        terms:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { type: string, minLength: 1, maxLength: 120 }
+      additionalProperties: false
+
+    ScrapeCategoryUpdate:
+      type: object
+      description: Omitted fields are left unchanged.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 100 }
+        terms:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: { type: string, minLength: 1, maxLength: 120 }
+      additionalProperties: false
+
+    ExclusionKind:
+      type: string
+      description: |
+        What a global exclusion matches. `company` is the normalised business name;
+        `domain` is a website domain and every address at it; `email_domain` is
+        addresses at a domain only; `email` is one exact address. Domain kinds cover
+        subdomains too.
+      enum: [company, email, email_domain, domain]
+
+    ExclusionMatchMode:
+      type: string
+      description: |
+        Company rules only. `exact` matches the normalised name; `prefix` also
+        matches names that start with it word by word ("planet fitness" matches
+        "Planet Fitness - Austin").
+      enum: [exact, prefix]
+
+    ExclusionSource:
+      type: string
+      description: Where the rule was created from
+      enum: [manual, business, verification, lead, contact]
+
+    ExclusionRef:
+      type: object
+      nullable: true
+      description: The rule that globally excludes this record; null when none does
+      required: [id, kind, value, display_value]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/ExclusionKind' }
+        value: { type: string, description: The normalised match key }
+        display_value: { type: string }
+
+    ExclusionAffected:
+      type: object
+      description: How many stored records a rule covers right now
+      required: [businesses, emails, contacts, live_leads]
+      properties:
+        businesses: { type: integer, format: int64 }
+        emails: { type: integer, format: int64, description: Distinct scraped addresses }
+        contacts: { type: integer, format: int64 }
+        live_leads:
+          type: integer
+          format: int64
+          description: |
+            Campaign leads the rule keeps out of outreach: waiting, in flight, or
+            already taken out of their campaign by the exclusion
+      additionalProperties: false
+
+    GlobalExclusion:
+      type: object
+      required: [id, kind, value, display_value, match_mode, source, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/ExclusionKind' }
+        value: { type: string, description: The normalised match key }
+        display_value: { type: string, description: What was entered or clicked }
+        match_mode: { $ref: '#/components/schemas/ExclusionMatchMode' }
+        reason: { type: string, nullable: true }
+        source: { $ref: '#/components/schemas/ExclusionSource' }
+        source_ref_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The business, verification row, lead or contact it was created from
+        created_at: { type: string, format: date-time }
+        removed_at: { type: string, format: date-time, nullable: true }
+        removed_note: { type: string, nullable: true }
+        affected: { $ref: '#/components/schemas/ExclusionAffected' }
+
+    GlobalExclusionList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/GlobalExclusion' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    GlobalExclusionCreate:
+      type: object
+      required: [kind, value]
+      properties:
+        kind: { $ref: '#/components/schemas/ExclusionKind' }
+        value:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: |
+            A company name, an address, or a domain. Domains may be given as a URL,
+            a bare host or "@host"; an address given for a domain kind uses its domain.
+        match_mode: { $ref: '#/components/schemas/ExclusionMatchMode' }
+        reason: { type: string, maxLength: 1000, nullable: true }
+        source: { $ref: '#/components/schemas/ExclusionSource' }
+        source_ref_id: { type: string, format: uuid, nullable: true }
+      additionalProperties: false
+
+    ExclusionPreview:
+      type: object
+      required: [kind, value, display_value, match_mode, affected, sample_businesses, sample_emails]
+      properties:
+        kind: { $ref: '#/components/schemas/ExclusionKind' }
+        value: { type: string, description: The normalised match key }
+        display_value: { type: string }
+        match_mode: { $ref: '#/components/schemas/ExclusionMatchMode' }
+        existing_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: An active rule with the same kind and key, when one exists
+        affected: { $ref: '#/components/schemas/ExclusionAffected' }
+        sample_businesses:
+          type: array
+          maxItems: 10
+          items: { $ref: '#/components/schemas/ExclusionPreviewBusiness' }
+        sample_emails:
+          type: array
+          maxItems: 10
+          items: { type: string }
+        warning:
+          type: string
+          nullable: true
+          description: Set when the rule looks broader than intended, e.g. a free-mail domain
+
+    ExclusionPreviewBusiness:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        domain: { type: string, nullable: true }
+
+    ExclusionCheckRequest:
+      type: object
+      description: Any combination; the first rule matching any of them is returned
+      properties:
+        business_id: { type: string, format: uuid }
+        email: { type: string, maxLength: 320 }
+        domain: { type: string, maxLength: 500 }
+        company: { type: string, maxLength: 500 }
+      additionalProperties: false
+
+    ExclusionCheckResult:
+      type: object
+      required: [excluded]
+      properties:
+        excluded: { type: boolean }
+        exclusion: { $ref: '#/components/schemas/ExclusionRef' }
+
     SourceTestResult:
       type: object
       required: [ok, kind]
@@ -2789,7 +3219,7 @@ components:
         terms:
           type: array
           minItems: 1
-          maxItems: 20
+          maxItems: 50
           items: { type: string, minLength: 1, maxLength: 120 }
         locations:
           type: array
@@ -2907,6 +3337,7 @@ components:
           nullable: true
         verification_score: { type: integer, nullable: true }
         typo_suggestion: { type: string, nullable: true }
+        exclusion: { $ref: '#/components/schemas/ExclusionRef' }
         found_at: { type: string, format: date-time }
 
     SocialNetwork:
@@ -2952,6 +3383,7 @@ components:
         lat: { type: number, format: double, nullable: true }
         lng: { type: number, format: double, nullable: true }
         suppressed: { type: boolean }
+        exclusion: { $ref: '#/components/schemas/ExclusionRef' }
         notes: { type: string, nullable: true }
         first_job_id: { type: string, format: uuid, nullable: true }
         first_job_name: { type: string, nullable: true, description: Name of the job that first found this business, null once that job is deleted }
@@ -3200,6 +3632,7 @@ components:
           description: The corrected address, offered to the operator rather than applied
         last_error: { type: string, nullable: true }
         business_count: { type: integer }
+        exclusion: { $ref: '#/components/schemas/ExclusionRef' }
         updated_at: { type: string, format: date-time }
 
     EmailVerificationDetail:
@@ -3555,9 +3988,11 @@ components:
 
     CampaignLeadStatus:
       type: string
-      description: The delivery state of one contact inside one campaign.
+      description: |
+        The delivery state of one contact inside one campaign. `excluded` means a
+        global exclusion took the lead out of the campaign.
       enum: [pending, pushing, active, paused, completed, replied, bounced,
-             unsubscribed, skipped, suppressed, failed]
+             unsubscribed, skipped, suppressed, failed, excluded]
 
     CampaignVariantStatus:
       type: string
@@ -3959,6 +4394,7 @@ components:
             title: { type: string, nullable: true }
             lifecycle_stage: { $ref: '#/components/schemas/ContactStage' }
             suppressed_at: { type: string, format: date-time, nullable: true }
+            exclusion: { $ref: '#/components/schemas/ExclusionRef' }
             variant_names:
               type: array
               description: The variants assigned to this lead, in step order
@@ -4026,11 +4462,15 @@ components:
       description: |
         `matched` is what the filter found; the rest is what became of it. The skip
         counts are reported rather than refused so an import is never silently partial.
-      required: [matched, imported, skipped_suppressed, skipped_existing, skipped_invalid, capped]
+      required: [matched, imported, skipped_suppressed, skipped_excluded, skipped_existing, skipped_invalid, capped]
       properties:
         matched: { type: integer, format: int64 }
         imported: { type: integer }
         skipped_suppressed: { type: integer }
+        skipped_excluded:
+          type: integer
+          description: Addresses the filter reached that a global exclusion keeps out
+
         skipped_existing: { type: integer }
         skipped_invalid: { type: integer }
         capped:
@@ -4065,6 +4505,7 @@ components:
           nullable: true
           description: Merge fields carried into the rendered email
         last_event_at: { type: string, format: date-time, nullable: true }
+        exclusion: { $ref: '#/components/schemas/ExclusionRef' }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         has_consent:

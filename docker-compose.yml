@@ -80,10 +80,11 @@ services:
       RCH__SMTP_TIMEOUT: "45"
       # No RabbitMQ: /v1/check_email runs the verification inline.
       RCH__WORKER__ENABLE: "false"
-      # Reacher's own throttle. Keep it at or above
-      # KARVON_VERIFY_REACHER_CONCURRENCY so our client is the tighter bound, and
-      # low enough that mail providers do not block the egress IP.
-      RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: "60"
+      # Reacher's own throttle. Keep it above KARVON_VERIFY_REACHER_RATE_PER_MINUTE
+      # so our client is the tighter bound (otherwise Reacher answers 429 and the
+      # client's breaker opens), and low enough that mail providers do not block
+      # the egress IP.
+      RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: "120"
       RCH__THROTTLE__MAX_REQUESTS_PER_DAY: "10000"
       RUST_LOG: reacher=info
     ports:

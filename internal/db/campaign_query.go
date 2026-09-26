@@ -213,6 +213,8 @@ type LeadRow struct {
 	SuppressedAt   *time.Time
 	VariantNames   []string
 	SendsTotal     int64
+	// Exclusion is the global exclusion rule covering the contact, or nil.
+	Exclusion *ExclusionRef
 }
 
 var leadSorts = map[string]sortSpec{
@@ -279,7 +281,13 @@ func (s *Store) ListCampaignLeadRows(ctx context.Context, f LeadFilter, sort str
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	err = annotateExclusions(ctx, s, out, func(r *LeadRow) string { return r.Email },
+		func(r *LeadRow, ref *ExclusionRef) { r.Exclusion = ref })
+	return out, err
 }
 
 // GetCampaignLeadRow returns one lead joined with its contact.
@@ -305,7 +313,11 @@ func (s *Store) GetCampaignLeadRow(ctx context.Context, id uuid.UUID) (LeadRow, 
 		&r.LifecycleStage, &r.SuppressedAt, &r.VariantNames, &r.SendsTotal); err != nil {
 		return LeadRow{}, fmt.Errorf("db: scan campaign lead: %w", err)
 	}
-	return r, nil
+	rows.Close()
+	one := []LeadRow{r}
+	err = annotateExclusions(ctx, s, one, func(r *LeadRow) string { return r.Email },
+		func(r *LeadRow, ref *ExclusionRef) { r.Exclusion = ref })
+	return one[0], err
 }
 
 // CountCampaignLeadRows counts the leads a filter matches.
@@ -329,6 +341,9 @@ type ContactFilter struct {
 	HasConsent *bool
 	CampaignID *uuid.UUID
 	Q          *string
+	// Excluded keeps only globally excluded contacts (true), hides them (false),
+	// or ignores exclusion (nil).
+	Excluded *bool
 }
 
 // ContactRow is one contact with the counts the list shows.
@@ -355,6 +370,8 @@ type ContactRow struct {
 	HasConsent        bool
 	CampaignCount     int64
 	SubscriptionCount int64
+	// Exclusion is the global exclusion rule covering the contact, or nil.
+	Exclusion *ExclusionRef
 }
 
 var contactSorts = map[string]sortSpec{
@@ -400,6 +417,9 @@ func buildContactWhere(f ContactFilter, a *argSet) string {
 	if f.CampaignID != nil {
 		conds = append(conds, "c.id IN (SELECT contact_id FROM campaign_leads WHERE campaign_id = "+a.add(*f.CampaignID)+")")
 	}
+	if f.Excluded != nil {
+		conds = append(conds, excludedEmailCond("c.email", *f.Excluded))
+	}
 	if f.Q != nil && strings.TrimSpace(*f.Q) != "" {
 		q := "%" + strings.TrimSpace(*f.Q) + "%"
 		p := a.add(q)
@@ -430,7 +450,13 @@ func (s *Store) ListContactRows(ctx context.Context, f ContactFilter, sort strin
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	err = annotateExclusions(ctx, s, out, func(r *ContactRow) string { return r.Email },
+		func(r *ContactRow, ref *ExclusionRef) { r.Exclusion = ref })
+	return out, err
 }
 
 // GetContactRow returns one contact with its counts.
@@ -454,7 +480,11 @@ func (s *Store) GetContactRow(ctx context.Context, id uuid.UUID) (ContactRow, er
 		&r.CampaignCount, &r.SubscriptionCount); err != nil {
 		return ContactRow{}, fmt.Errorf("db: scan contact: %w", err)
 	}
-	return r, nil
+	rows.Close()
+	one := []ContactRow{r}
+	err = annotateExclusions(ctx, s, one, func(r *ContactRow) string { return r.Email },
+		func(r *ContactRow, ref *ExclusionRef) { r.Exclusion = ref })
+	return one[0], err
 }
 
 // CountContactRows counts the contacts a filter matches.
@@ -561,6 +591,8 @@ func (s *Store) CountImportCandidates(ctx context.Context, f ImportFilter) (int6
 type ImportEmailState struct {
 	Suppressed bool
 	Existing   bool
+	// Excluded is set when a global exclusion covers the address.
+	Excluded bool
 }
 
 // ClassifyImportEmails answers, for a batch of addresses, what an import would
@@ -590,5 +622,19 @@ func (s *Store) ClassifyImportEmails(ctx context.Context, campaignID uuid.UUID, 
 		}
 		out[strings.ToLower(email)] = state
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	excluded, err := s.ExcludedEmails(ctx, emails)
+	if err != nil {
+		return nil, err
+	}
+	for email := range excluded {
+		state := out[email]
+		state.Excluded = true
+		out[email] = state
+	}
+	return out, nil
 }

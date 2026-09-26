@@ -72,9 +72,12 @@ func (s *Server) ListVerifications(w http.ResponseWriter, r *http.Request, param
 	if params.IncludeSuppressed != nil {
 		filter.IncludeSuppressed = *params.IncludeSuppressed
 	}
+	filter.Excluded = params.Excluded
 	// "Needs third party" means exactly what a paid run would pick up: inside the
-	// paid band, and never yet sent to a third party.
+	// paid band, never yet sent to a third party, and not globally excluded.
 	if params.NeedsThirdParty != nil && *params.NeedsThirdParty {
+		notExcluded := false
+		filter.Excluded = &notExcluded
 		settings := s.verification.Settings(r.Context())
 		complete, notSent := true, false
 		minScore, maxScore := settings.PaidMinScore, settings.PaidThreshold

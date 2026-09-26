@@ -16,6 +16,7 @@ const (
 	ReasonNoConsent    = "no_consent"
 	ReasonInvalidEmail = "invalid_email"
 	ReasonUnsubscribed = "unsubscribed"
+	ReasonExcluded     = "excluded"
 )
 
 // Input is everything the gate looks at.
@@ -26,13 +27,15 @@ type Input struct {
 	HasActiveConsent  bool
 	ConsentSource     string
 	AllowSingleOptIn  bool // the audience setting
+	// Excluded is set when a global exclusion covers the contact.
+	Excluded bool
 }
 
 // Decision is the outcome of the gate.
 type Decision struct {
 	Eligible        bool   // may be pushed to Mailchimp at all
 	RequestedStatus string // campaign.RequestPending or campaign.RequestSubscribed
-	Reason          string // machine reason: "", "suppressed", "no_consent", "invalid_email", "unsubscribed"
+	Reason          string // machine reason: "", "suppressed", "excluded", "no_consent", "invalid_email", "unsubscribed"
 	Explanation     string // human sentence
 }
 
@@ -41,12 +44,19 @@ type Decision struct {
 // A suppressed contact is not eligible: the reason is "unsubscribed" or
 // "invalid_email" when that is the suppression reason, "suppressed" otherwise. A
 // contact in any terminal stage is treated as suppressed too. Without an active
-// consent record the contact is not eligible ("no_consent"), whatever the stage.
+// consent record the contact is not eligible ("no_consent"), whatever the stage. A
+// globally excluded contact is never eligible ("excluded"), consent or not.
 // Otherwise the contact is eligible; the requested status is subscribed only when
 // the audience allows single opt-in, pending otherwise.
 func Evaluate(in Input) Decision {
 	if in.Suppressed || in.Stage.Terminal() {
 		return suppressedDecision(in)
+	}
+	if in.Excluded {
+		return Decision{
+			Reason:      ReasonExcluded,
+			Explanation: "The contact is on the global exclusion list, so nothing may be sent to them.",
+		}
 	}
 	if !in.HasActiveConsent {
 		return Decision{

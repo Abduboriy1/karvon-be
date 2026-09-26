@@ -5,6 +5,8 @@
 // this package owns everything in between.
 package campaign
 
+import "strconv"
+
 // Source kinds and roles this module adds to the sources table.
 const (
 	RoleOutreach   = "outreach"
@@ -48,11 +50,13 @@ const (
 	LeadSkipped      = "skipped"
 	LeadSuppressed   = "suppressed"
 	LeadFailed       = "failed"
+	// LeadExcluded is a lead a global exclusion took out of its campaign.
+	LeadExcluded = "excluded"
 )
 
 // LeadStatuses lists every campaign lead status the schema accepts.
 var LeadStatuses = []string{LeadPending, LeadPushing, LeadActive, LeadPaused, LeadCompleted, LeadReplied,
-	LeadBounced, LeadUnsubscribed, LeadSkipped, LeadSuppressed, LeadFailed}
+	LeadBounced, LeadUnsubscribed, LeadSkipped, LeadSuppressed, LeadFailed, LeadExcluded}
 
 // Contact sources.
 const (
@@ -295,14 +299,7 @@ const MaxSteps = 5
 // SubjectVar is the custom variable holding the rendered subject for a step. The
 // Instantly step variant is literally "{{k_subject_1}}" / "{{k_body_1}}", and the
 // push fills these per lead, which is what makes local rendering work.
-func SubjectVar(step int) string { return "k_subject_" + itoa(step) }
+func SubjectVar(step int) string { return "k_subject_" + strconv.Itoa(step) }
 
 // BodyVar is the custom variable that holds the rendered body for a step.
-func BodyVar(step int) string { return "k_body_" + itoa(step) }
-
-func itoa(n int) string {
-	if n < 10 {
-		return string(rune('0' + n))
-	}
-	return string(rune('0'+n/10)) + string(rune('0'+n%10))
-}
+func BodyVar(step int) string { return "k_body_" + strconv.Itoa(step) }

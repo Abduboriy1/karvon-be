@@ -21,10 +21,12 @@ import (
 	"github.com/bory/karvon-be/internal/business"
 	"github.com/bory/karvon-be/internal/campaign"
 	campaignjobs "github.com/bory/karvon-be/internal/campaign/jobs"
+	"github.com/bory/karvon-be/internal/category"
 	"github.com/bory/karvon-be/internal/config"
 	"github.com/bory/karvon-be/internal/crypto"
 	"github.com/bory/karvon-be/internal/db"
 	"github.com/bory/karvon-be/internal/events"
+	"github.com/bory/karvon-be/internal/exclusion"
 	httpapi "github.com/bory/karvon-be/internal/http"
 	"github.com/bory/karvon-be/internal/queue"
 	"github.com/bory/karvon-be/internal/scraper"
@@ -146,6 +148,7 @@ func (a *App) build(ctx context.Context) error {
 	}
 
 	campaignDeps, campaignService := a.buildCampaign(cipher)
+	exclusionService := exclusion.NewService(a.store)
 
 	riverClient, err := a.newRiverClient(workerDeps, verifyDeps, campaignDeps)
 	if err != nil {
@@ -158,6 +161,7 @@ func (a *App) build(ctx context.Context) error {
 	verifyService.SetQueue(riverClient)
 	campaignDeps.Queue = riverClient
 	campaignService.SetQueue(riverClient)
+	exclusionService.SetQueue(riverClient)
 
 	jobService := scraper.NewService(a.store, riverClient, publisher, a.log,
 		scraper.ServiceConfig{MaxQueriesPerJob: a.cfg.MaxQueriesPerJob})
@@ -166,6 +170,8 @@ func (a *App) build(ctx context.Context) error {
 		Jobs:         jobService,
 		Businesses:   business.NewService(a.store),
 		Sources:      source.NewService(a.store, cipher, providers, verifiers, a.log),
+		Categories:   category.NewService(a.store),
+		Exclusions:   exclusionService,
 		Verification: verifyService,
 		Campaigns:    campaignService,
 		Stats:        stats.NewService(a.store),
@@ -249,6 +255,7 @@ func (a *App) buildVerification(cipher *crypto.Cipher) (*verifyjobs.Deps, *verif
 		Timeout:          a.cfg.VerifyReacherTimeout,
 		Retries:          a.cfg.VerifyReacherRetries,
 		Concurrency:      a.cfg.VerifyReacherConcurrency,
+		RatePerMinute:    a.cfg.VerifyReacherRatePerMinute,
 		BreakerThreshold: a.cfg.VerifyReacherBreakerThreshold,
 		BreakerCooldown:  a.cfg.VerifyReacherBreakerCooldown,
 		HelloName:        a.cfg.VerifyReacherHelloName,
@@ -350,6 +357,7 @@ func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
 			river.AddWorkerSafely(workers, campaignjobs.NewPushLeadsWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewActivateWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewRemoveLeadWorker(campaignDeps)),
+			river.AddWorkerSafely(workers, campaignjobs.NewExclusionSweepWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewProcessEventWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewSyncCampaignWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewSyncAllWorker(campaignDeps)),

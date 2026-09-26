@@ -13,20 +13,22 @@ SELECT (SELECT count(*) FROM email_verifications)::bigint                       
 
 -- name: CountEmailsNeedingSelfVerification :one
 -- Addresses on the master list that have never been through the free stage, whether
--- or not a verification row exists for them yet.
+-- or not a verification row exists for them yet, leaving out globally excluded ones.
 SELECT count(DISTINCT be.email)::bigint
 FROM business_emails be
          LEFT JOIN email_verifications ev ON ev.email = be.email
-WHERE ev.id IS NULL OR ev.free_scored_at IS NULL;
+WHERE (ev.id IS NULL OR ev.free_scored_at IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = be.email);
 
 -- name: CountQualifyingForThirdParty :one
 -- Inside the paid band and never sent to a third party. The band has both a floor
 -- (below it an address is not worth paying for) and a ceiling (at or above it the
 -- free providers are already confident enough that paying adds nothing); the send
--- lock is absolute and outranks both.
+-- lock is absolute and outranks both. A globally excluded address never qualifies.
 SELECT count(*)::bigint
 FROM email_verifications ev
 WHERE ev.free_scored_at IS NOT NULL
   AND ev.third_party_sent_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = ev.email)
   AND ev.free_score >= sqlc.arg('min_score')::int
   AND ev.free_score < sqlc.arg('max_score')::int;

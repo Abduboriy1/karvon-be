@@ -33,7 +33,7 @@ func (q *Queries) BulkSetSuppressed(ctx context.Context, arg BulkSetSuppressedPa
 }
 
 const findBusinessByDomain = `-- name: FindBusinessByDomain :one
-SELECT id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at FROM businesses
+SELECT id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at, name_key, name_prefixes, domain_suffixes FROM businesses
 WHERE domain = $1 AND domain IS NOT NULL
 ORDER BY created_at
 LIMIT 1
@@ -65,12 +65,15 @@ func (q *Queries) FindBusinessByDomain(ctx context.Context, domain *string) (Bus
 		&i.LastCrawledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NameKey,
+		&i.NamePrefixes,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
 
 const findBusinessByPhoneZip = `-- name: FindBusinessByPhoneZip :one
-SELECT id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at FROM businesses
+SELECT id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at, name_key, name_prefixes, domain_suffixes FROM businesses
 WHERE phone = $1 AND zip = $2
 ORDER BY created_at
 LIMIT 1
@@ -107,6 +110,9 @@ func (q *Queries) FindBusinessByPhoneZip(ctx context.Context, arg FindBusinessBy
 		&i.LastCrawledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NameKey,
+		&i.NamePrefixes,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
@@ -149,7 +155,7 @@ func (q *Queries) FindFreshCrawledSibling(ctx context.Context, arg FindFreshCraw
 }
 
 const getBusiness = `-- name: GetBusiness :one
-SELECT b.id, b.place_id, b.name, b.category, b.address, b.city, b.state, b.zip, b.phone, b.website, b.domain, b.rating, b.reviews, b.lat, b.lng, b.raw, b.first_job_id, b.suppressed, b.notes, b.last_crawled_at, b.created_at, b.updated_at,
+SELECT b.id, b.place_id, b.name, b.category, b.address, b.city, b.state, b.zip, b.phone, b.website, b.domain, b.rating, b.reviews, b.lat, b.lng, b.raw, b.first_job_id, b.suppressed, b.notes, b.last_crawled_at, b.created_at, b.updated_at, b.name_key, b.name_prefixes, b.domain_suffixes,
        (SELECT j.name FROM jobs j WHERE j.id = b.first_job_id)::text AS first_job_name,
        COALESCE((SELECT be.email FROM business_emails be
                  WHERE be.business_id = b.id
@@ -185,6 +191,9 @@ type GetBusinessRow struct {
 	LastCrawledAt      *time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	NameKey            *string
+	NamePrefixes       []string
+	DomainSuffixes     []string
 	FirstJobName       string
 	PrimaryEmail       string
 	PrimaryEmailSource string
@@ -217,6 +226,9 @@ func (q *Queries) GetBusiness(ctx context.Context, id uuid.UUID) (GetBusinessRow
 		&i.LastCrawledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NameKey,
+		&i.NamePrefixes,
+		&i.DomainSuffixes,
 		&i.FirstJobName,
 		&i.PrimaryEmail,
 		&i.PrimaryEmailSource,
@@ -233,7 +245,7 @@ VALUES ($1, $2, $3, $4,
         $9, $10, $11, $12,
         $13, $14, $15, $16,
         $17)
-RETURNING id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at
+RETURNING id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at, name_key, name_prefixes, domain_suffixes
 `
 
 type InsertBusinessParams struct {
@@ -300,6 +312,9 @@ func (q *Queries) InsertBusiness(ctx context.Context, arg InsertBusinessParams) 
 		&i.LastCrawledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NameKey,
+		&i.NamePrefixes,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
@@ -405,7 +420,7 @@ SET name       = $1,
     lng        = COALESCE($13, lng),
     updated_at = now()
 WHERE id = $14
-RETURNING id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at
+RETURNING id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at, name_key, name_prefixes, domain_suffixes
 `
 
 type UpdateBusinessFromListingParams struct {
@@ -466,6 +481,9 @@ func (q *Queries) UpdateBusinessFromListing(ctx context.Context, arg UpdateBusin
 		&i.LastCrawledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NameKey,
+		&i.NamePrefixes,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
@@ -494,7 +512,7 @@ ON CONFLICT (place_id) DO UPDATE
         lng        = COALESCE(EXCLUDED.lng, businesses.lng),
         raw        = COALESCE(EXCLUDED.raw, businesses.raw),
         updated_at = now()
-RETURNING id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at
+RETURNING id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at, name_key, name_prefixes, domain_suffixes
 `
 
 type UpsertBusinessByPlaceIDParams struct {
@@ -561,6 +579,9 @@ func (q *Queries) UpsertBusinessByPlaceID(ctx context.Context, arg UpsertBusines
 		&i.LastCrawledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.NameKey,
+		&i.NamePrefixes,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }

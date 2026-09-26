@@ -33,8 +33,9 @@ type Querier interface {
 	ClaimCampaignLaunch(ctx context.Context, id uuid.UUID) (Campaign, error)
 	// Compare-and-set: only a queued or failed subscription can be picked up.
 	ClaimNewsletterSubscription(ctx context.Context, id uuid.UUID) (NewsletterSubscription, error)
-	// The push claim. A lead is claimed only while it is pending and its contact is not
-	// suppressed, so a suppressed contact is never handed to the provider.
+	// The push claim. A lead is claimed only while it is pending, its contact is not
+	// suppressed and its address is not globally excluded, so neither is ever handed
+	// to the provider.
 	ClaimPendingCampaignLeads(ctx context.Context, arg ClaimPendingCampaignLeadsParams) ([]CampaignLead, error)
 	ClaimProviderRunSlot(ctx context.Context, id uuid.UUID) (int64, error)
 	// The hard check that stops an address reaching a third party twice.
@@ -66,7 +67,7 @@ type Querier interface {
 	CountEmailComponents(ctx context.Context, arg CountEmailComponentsParams) (int64, error)
 	CountEmailVariants(ctx context.Context, arg CountEmailVariantsParams) (int64, error)
 	// Addresses on the master list that have never been through the free stage, whether
-	// or not a verification row exists for them yet.
+	// or not a verification row exists for them yet, leaving out globally excluded ones.
 	CountEmailsNeedingSelfVerification(ctx context.Context) (int64, error)
 	CountJobResults(ctx context.Context, jobID uuid.UUID) (int64, error)
 	CountJobSitesTotal(ctx context.Context, jobID uuid.UUID) (int64, error)
@@ -88,7 +89,7 @@ type Querier interface {
 	// Inside the paid band and never sent to a third party. The band has both a floor
 	// (below it an address is not worth paying for) and a ceiling (at or above it the
 	// free providers are already confident enough that paying adds nothing); the send
-	// lock is absolute and outranks both.
+	// lock is absolute and outranks both. A globally excluded address never qualifies.
 	CountQualifyingForThirdParty(ctx context.Context, arg CountQualifyingForThirdPartyParams) (int64, error)
 	CountSyncRuns(ctx context.Context, kind *string) (int64, error)
 	CountVerificationRuns(ctx context.Context, arg CountVerificationRunsParams) (int64, error)
@@ -98,20 +99,31 @@ type Querier interface {
 	CreateContactSuppression(ctx context.Context, arg CreateContactSuppressionParams) (ContactSuppression, error)
 	CreateEmailComponent(ctx context.Context, arg CreateEmailComponentParams) (EmailComponent, error)
 	CreateEmailVariant(ctx context.Context, arg CreateEmailVariantParams) (EmailVariant, error)
+	CreateGlobalExclusion(ctx context.Context, arg CreateGlobalExclusionParams) (GlobalExclusion, error)
 	CreateJob(ctx context.Context, arg CreateJobParams) (Job, error)
 	CreateJobQuery(ctx context.Context, arg CreateJobQueryParams) (JobQuery, error)
 	CreateNewsletterSubscription(ctx context.Context, arg CreateNewsletterSubscriptionParams) (NewsletterSubscription, error)
+	CreateScrapeCategory(ctx context.Context, arg CreateScrapeCategoryParams) (ScrapeCategory, error)
 	CreateSyncRun(ctx context.Context, arg CreateSyncRunParams) (SyncRun, error)
 	CreateVariantAssignment(ctx context.Context, arg CreateVariantAssignmentParams) (VariantAssignment, error)
 	CreateVerificationRun(ctx context.Context, arg CreateVerificationRunParams) (VerificationRun, error)
 	DeleteCampaignLead(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteJob(ctx context.Context, id uuid.UUID) (int64, error)
+	DeleteScrapeCategory(ctx context.Context, id uuid.UUID) (int64, error)
 	// When a business already holds the corrected address, its typo'd row is dropped
 	// rather than updated, because (business_id, email) is unique.
 	DeleteShadowedBusinessEmails(ctx context.Context, arg DeleteShadowedBusinessEmailsParams) (int64, error)
 	DeleteUnlockedAssignmentsForLead(ctx context.Context, campaignLeadID uuid.UUID) error
 	EmailsPerJob(ctx context.Context, lim int32) ([]EmailsPerJobRow, error)
+	// The exclusion sweep: every lead that is still waiting or in flight and whose
+	// contact is now globally excluded stops. Finished and replied leads are history
+	// and are left as they are.
+	ExcludeLiveCampaignLeads(ctx context.Context) ([]CampaignLead, error)
+	// The company match key is computed by the same function the generated columns
+	// use, so a rule and the rows it should match can never be normalised differently.
+	ExclusionCompanyKey(ctx context.Context, name string) (string, error)
 	FailNewsletterSubscription(ctx context.Context, arg FailNewsletterSubscriptionParams) error
+	FindActiveGlobalExclusion(ctx context.Context, arg FindActiveGlobalExclusionParams) (GlobalExclusion, error)
 	FindBusinessByDomain(ctx context.Context, domain *string) (Business, error)
 	FindBusinessByPhoneZip(ctx context.Context, arg FindBusinessByPhoneZipParams) (Business, error)
 	// A sibling is another listing of the same website, not merely the same domain: a
@@ -140,6 +152,7 @@ type Querier interface {
 	GetEmailVariant(ctx context.Context, id uuid.UUID) (EmailVariant, error)
 	GetEmailVerification(ctx context.Context, id uuid.UUID) (EmailVerification, error)
 	GetEmailVerificationByEmail(ctx context.Context, email string) (EmailVerification, error)
+	GetGlobalExclusion(ctx context.Context, id uuid.UUID) (GlobalExclusion, error)
 	GetJob(ctx context.Context, id uuid.UUID) (GetJobRow, error)
 	GetJobQuery(ctx context.Context, id uuid.UUID) (JobQuery, error)
 	GetJobStats(ctx context.Context, id uuid.UUID) ([]byte, error)
@@ -152,6 +165,7 @@ type Querier interface {
 	GetNewsletterSubscriptionByContact(ctx context.Context, arg GetNewsletterSubscriptionByContactParams) (NewsletterSubscription, error)
 	GetNewsletterSubscriptionByHash(ctx context.Context, arg GetNewsletterSubscriptionByHashParams) (NewsletterSubscription, error)
 	GetProviderEvent(ctx context.Context, id uuid.UUID) (ProviderEvent, error)
+	GetScrapeCategory(ctx context.Context, id uuid.UUID) (ScrapeCategory, error)
 	GetSendingAccount(ctx context.Context, id uuid.UUID) (SendingAccount, error)
 	GetSendingAccountByEmail(ctx context.Context, email string) (SendingAccount, error)
 	GetSource(ctx context.Context, id uuid.UUID) (Source, error)
@@ -227,6 +241,8 @@ type Querier interface {
 	ListPushedCampaignLeadsForContact(ctx context.Context, contactID uuid.UUID) ([]CampaignLead, error)
 	ListQueuedVerificationRunItems(ctx context.Context, runID uuid.UUID) ([]uuid.UUID, error)
 	ListRecentJobEvents(ctx context.Context, arg ListRecentJobEventsParams) ([]JobEvent, error)
+	// Defaults first, in seed order, then the user's own categories by name.
+	ListScrapeCategories(ctx context.Context) ([]ScrapeCategory, error)
 	ListSendingAccountStatsDaily(ctx context.Context, arg ListSendingAccountStatsDailyParams) ([]SendingAccountStatsDaily, error)
 	ListSendingAccounts(ctx context.Context, arg ListSendingAccountsParams) ([]SendingAccount, error)
 	ListSendingAccountsByIDs(ctx context.Context, ids []uuid.UUID) ([]SendingAccount, error)
@@ -248,6 +264,8 @@ type Querier interface {
 	MarkCampaignActive(ctx context.Context, id uuid.UUID) (Campaign, error)
 	MarkCampaignCompleted(ctx context.Context, id uuid.UUID) (Campaign, error)
 	MarkCampaignFailed(ctx context.Context, arg MarkCampaignFailedParams) (Campaign, error)
+	// A lead the exclusion sweep stopped while its push was in flight stays excluded;
+	// the caller sees that and removes it from the provider again.
 	MarkCampaignLeadPushed(ctx context.Context, arg MarkCampaignLeadPushedParams) (CampaignLead, error)
 	MarkCampaignLeadStatus(ctx context.Context, arg MarkCampaignLeadStatusParams) (CampaignLead, error)
 	MarkCampaignLeadTerminal(ctx context.Context, arg MarkCampaignLeadTerminalParams) error
@@ -290,9 +308,15 @@ type Querier interface {
 	// address's one and only send. The pass2_verified_at guard means a claim that did
 	// produce a verdict can never be released, and the database enforces that too.
 	ReleaseThirdPartySend(ctx context.Context, id uuid.UUID) (int64, error)
+	RemoveGlobalExclusion(ctx context.Context, arg RemoveGlobalExclusionParams) (GlobalExclusion, error)
 	ReplaceVariantComponents(ctx context.Context, variantID uuid.UUID) error
 	RequeueNewsletterSubscription(ctx context.Context, arg RequeueNewsletterSubscriptionParams) (NewsletterSubscription, error)
 	ResetProviderEvent(ctx context.Context, id uuid.UUID) (ProviderEvent, error)
+	// When a rule is removed, a lead it took out that never reached the provider goes
+	// back to pending, unless its contact is suppressed, another rule still covers it,
+	// or its campaign is over. A lead that was pushed stays excluded: it was removed
+	// from Instantly and has to be imported again deliberately.
+	RestoreExcludedCampaignLeads(ctx context.Context) ([]CampaignLead, error)
 	RetargetBusinessEmails(ctx context.Context, arg RetargetBusinessEmailsParams) (int64, error)
 	RevokeConsent(ctx context.Context, arg RevokeConsentParams) (ContactConsent, error)
 	SaveProviderRun(ctx context.Context, arg SaveProviderRunParams) error
@@ -337,6 +361,7 @@ type Querier interface {
 	UpdateEmailComponent(ctx context.Context, arg UpdateEmailComponentParams) (EmailComponent, error)
 	UpdateEmailVariant(ctx context.Context, arg UpdateEmailVariantParams) (EmailVariant, error)
 	UpdateNewsletterAudienceSettings(ctx context.Context, arg UpdateNewsletterAudienceSettingsParams) (NewsletterAudience, error)
+	UpdateScrapeCategory(ctx context.Context, arg UpdateScrapeCategoryParams) (ScrapeCategory, error)
 	UpdateSource(ctx context.Context, arg UpdateSourceParams) (Source, error)
 	// The free stage writes the local pipeline's own breakdown and the weighted result of
 	// every free provider in one statement, so a row can never show a free score without

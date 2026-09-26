@@ -473,7 +473,7 @@ func (q *Queries) ListNewsletterAudiences(ctx context.Context) ([]NewsletterAudi
 }
 
 const listNewsletterEligibleContacts = `-- name: ListNewsletterEligibleContacts :many
-SELECT c.id, c.email, c.domain, c.first_name, c.last_name, c.company, c.title, c.phone, c.website, c.business_id, c.source, c.lifecycle_stage, c.stage_changed_at, c.suppressed_at, c.suppression_reason, c.attributes, c.last_event_at, c.created_at, c.updated_at, cc.id AS consent_id, cc.source AS consent_source, cc.captured_at AS consent_captured_at
+SELECT c.id, c.email, c.domain, c.first_name, c.last_name, c.company, c.title, c.phone, c.website, c.business_id, c.source, c.lifecycle_stage, c.stage_changed_at, c.suppressed_at, c.suppression_reason, c.attributes, c.last_event_at, c.created_at, c.updated_at, c.domain_suffixes, c.website_suffixes, c.company_key, c.company_prefixes, cc.id AS consent_id, cc.source AS consent_source, cc.captured_at AS consent_captured_at
 FROM contacts c
 LEFT JOIN contact_consents cc ON cc.contact_id = c.id AND cc.revoked_at IS NULL
 WHERE c.lifecycle_stage IN ('permission_requested', 'permission_captured', 'newsletter_eligible')
@@ -509,6 +509,10 @@ type ListNewsletterEligibleContactsRow struct {
 	LastEventAt       *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	DomainSuffixes    []string
+	WebsiteSuffixes   []string
+	CompanyKey        *string
+	CompanyPrefixes   []string
 	ConsentID         uuid.NullUUID
 	ConsentSource     *string
 	ConsentCapturedAt *time.Time
@@ -544,6 +548,10 @@ func (q *Queries) ListNewsletterEligibleContacts(ctx context.Context, arg ListNe
 			&i.LastEventAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.DomainSuffixes,
+			&i.WebsiteSuffixes,
+			&i.CompanyKey,
+			&i.CompanyPrefixes,
 			&i.ConsentID,
 			&i.ConsentSource,
 			&i.ConsentCapturedAt,

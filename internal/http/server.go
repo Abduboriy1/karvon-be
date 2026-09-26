@@ -39,6 +39,8 @@ type Server struct {
 	jobs         JobService
 	businesses   BusinessService
 	sources      SourceService
+	categories   CategoryService
+	exclusions   ExclusionService
 	verification VerificationService
 	campaigns    CampaignService
 	stats        StatsService
@@ -54,6 +56,8 @@ type Deps struct {
 	Jobs         JobService
 	Businesses   BusinessService
 	Sources      SourceService
+	Categories   CategoryService
+	Exclusions   ExclusionService
 	Verification VerificationService
 	Campaigns    CampaignService
 	Stats        StatsService
@@ -79,6 +83,8 @@ func NewServer(deps Deps) *Server {
 		jobs:         deps.Jobs,
 		businesses:   deps.Businesses,
 		sources:      deps.Sources,
+		categories:   deps.Categories,
+		exclusions:   deps.Exclusions,
 		verification: deps.Verification,
 		campaigns:    deps.Campaigns,
 		stats:        deps.Stats,

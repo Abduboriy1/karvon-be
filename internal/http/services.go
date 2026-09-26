@@ -11,8 +11,10 @@ import (
 	"github.com/bory/karvon-be/internal/business"
 	"github.com/bory/karvon-be/internal/campaign/ai"
 	campaignsvc "github.com/bory/karvon-be/internal/campaign/service"
+	"github.com/bory/karvon-be/internal/category"
 	"github.com/bory/karvon-be/internal/db"
 	"github.com/bory/karvon-be/internal/db/dbgen"
+	"github.com/bory/karvon-be/internal/exclusion"
 	"github.com/bory/karvon-be/internal/scraper"
 	"github.com/bory/karvon-be/internal/source"
 	"github.com/bory/karvon-be/internal/stats"
@@ -50,6 +52,25 @@ type SourceService interface {
 	Get(ctx context.Context, id uuid.UUID) (dbgen.Source, error)
 	Update(ctx context.Context, id uuid.UUID, in source.UpdateInput) (dbgen.Source, error)
 	Test(ctx context.Context, id uuid.UUID) (source.TestResult, error)
+}
+
+// CategoryService is the behaviour behind /scrape-categories.
+type CategoryService interface {
+	List(ctx context.Context) ([]dbgen.ScrapeCategory, error)
+	Get(ctx context.Context, id uuid.UUID) (dbgen.ScrapeCategory, error)
+	Create(ctx context.Context, in category.Input) (dbgen.ScrapeCategory, error)
+	Update(ctx context.Context, id uuid.UUID, in category.Input) (dbgen.ScrapeCategory, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// ExclusionService is the behaviour behind /exclusions.
+type ExclusionService interface {
+	List(ctx context.Context, f db.ExclusionFilter, sort string, page, perPage int) (exclusion.Page, error)
+	Get(ctx context.Context, id uuid.UUID) (exclusion.Rule, error)
+	Create(ctx context.Context, in exclusion.Input) (exclusion.Rule, error)
+	Preview(ctx context.Context, in exclusion.Input) (exclusion.Preview, error)
+	Remove(ctx context.Context, id uuid.UUID, note string) error
+	Check(ctx context.Context, subject exclusion.Subject) (*db.ExclusionRef, error)
 }
 
 // VerificationService is the behaviour behind /verification.

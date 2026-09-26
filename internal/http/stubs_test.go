@@ -15,8 +15,10 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/bory/karvon-be/internal/business"
+	"github.com/bory/karvon-be/internal/category"
 	"github.com/bory/karvon-be/internal/db"
 	"github.com/bory/karvon-be/internal/db/dbgen"
+	"github.com/bory/karvon-be/internal/exclusion"
 	httpapi "github.com/bory/karvon-be/internal/http"
 	"github.com/bory/karvon-be/internal/scraper"
 	"github.com/bory/karvon-be/internal/source"
@@ -159,6 +161,65 @@ func (s *stubSources) Update(_ context.Context, _ uuid.UUID, in source.UpdateInp
 	return s.source, s.err
 }
 
+type stubCategories struct {
+	row dbgen.ScrapeCategory
+	err error
+
+	lastInput category.Input
+}
+
+func (s *stubCategories) List(context.Context) ([]dbgen.ScrapeCategory, error) {
+	return []dbgen.ScrapeCategory{s.row}, s.err
+}
+func (s *stubCategories) Get(context.Context, uuid.UUID) (dbgen.ScrapeCategory, error) {
+	return s.row, s.err
+}
+func (s *stubCategories) Create(_ context.Context, in category.Input) (dbgen.ScrapeCategory, error) {
+	s.lastInput = in
+	return s.row, s.err
+}
+func (s *stubCategories) Update(_ context.Context, _ uuid.UUID, in category.Input) (dbgen.ScrapeCategory, error) {
+	s.lastInput = in
+	return s.row, s.err
+}
+func (s *stubCategories) Delete(context.Context, uuid.UUID) error { return s.err }
+
+type stubExclusions struct {
+	rule    exclusion.Rule
+	preview exclusion.Preview
+	match   *db.ExclusionRef
+	err     error
+
+	lastInput   exclusion.Input
+	lastFilter  db.ExclusionFilter
+	lastSubject exclusion.Subject
+	lastNote    string
+}
+
+func (s *stubExclusions) List(_ context.Context, f db.ExclusionFilter, _ string, _, _ int) (exclusion.Page, error) {
+	s.lastFilter = f
+	return exclusion.Page{Rows: []exclusion.Rule{s.rule}, Total: 1}, s.err
+}
+func (s *stubExclusions) Get(context.Context, uuid.UUID) (exclusion.Rule, error) {
+	return s.rule, s.err
+}
+func (s *stubExclusions) Create(_ context.Context, in exclusion.Input) (exclusion.Rule, error) {
+	s.lastInput = in
+	return s.rule, s.err
+}
+func (s *stubExclusions) Preview(_ context.Context, in exclusion.Input) (exclusion.Preview, error) {
+	s.lastInput = in
+	return s.preview, s.err
+}
+func (s *stubExclusions) Remove(_ context.Context, _ uuid.UUID, note string) error {
+	s.lastNote = note
+	return s.err
+}
+func (s *stubExclusions) Check(_ context.Context, subject exclusion.Subject) (*db.ExclusionRef, error) {
+	s.lastSubject = subject
+	return s.match, s.err
+}
+
 // stubVerification answers the /verification endpoints with canned results.
 type stubVerification struct {
 	stats    verify.Stats
@@ -295,6 +356,8 @@ type testDeps struct {
 	jobs         *stubJobs
 	businesses   *stubBusinesses
 	sources      *stubSources
+	categories   *stubCategories
+	exclusions   *stubExclusions
 	verification *stubVerification
 	stats        *stubStats
 	events       *stubEvents
@@ -316,6 +379,11 @@ func newTestServer(t *testing.T) (http.Handler, *testDeps) {
 		jobs:       &stubJobs{job: sampleJobRow()},
 		businesses: &stubBusinesses{},
 		sources:    &stubSources{source: sampleSource()},
+		exclusions: &stubExclusions{rule: exclusion.Rule{GlobalExclusion: dbgen.GlobalExclusion{
+			ID: testSourceID, Kind: exclusion.KindDomain, Value: "example.com", DisplayValue: "www.example.com",
+			MatchMode: exclusion.MatchExact, Source: exclusion.SourceManual,
+		}, Affected: db.ExclusionAffected{Businesses: 3, Emails: 5}}},
+		categories: &stubCategories{row: dbgen.ScrapeCategory{ID: testSourceID, Name: "Gyms", Terms: []string{"gym"}, IsDefault: true}},
 		verification: &stubVerification{
 			cfg:      verify.ServiceConfig{MaxRunEmails: 50_000},
 			settings: verify.DefaultSettings(),
@@ -331,6 +399,8 @@ func newTestServer(t *testing.T) (http.Handler, *testDeps) {
 		Jobs:         deps.jobs,
 		Businesses:   deps.businesses,
 		Sources:      deps.sources,
+		Categories:   deps.categories,
+		Exclusions:   deps.exclusions,
 		Verification: deps.verification,
 		Stats:        deps.stats,
 		Store:        deps.events,

@@ -162,12 +162,14 @@ func (w *RunWorker) seed(ctx context.Context, base db.VerificationFilter) error 
 // baseFilter mirrors the service's translation so a worker re-resolving a filter
 // sees exactly the set the estimate was computed over.
 func baseFilter(filter verify.RunFilter) db.VerificationFilter {
+	notExcluded := false
 	out := db.VerificationFilter{
 		BusinessIDs:       filter.BusinessIDs,
 		JobID:             filter.JobID,
 		Tags:              filter.Tags,
 		MinScore:          filter.MinScore,
 		IncludeSuppressed: filter.IncludeSuppressed,
+		Excluded:          &notExcluded,
 	}
 	if filter.Scope == verify.ScopeSelection {
 		out.IDs = filter.IDs

@@ -68,10 +68,14 @@ func (w *NewsletterPushWorker) Work(ctx context.Context, rj *river.Job[campaign.
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("campaign jobs: load consent: %w", err)
 	}
+	exclusion, err := d.Store.MatchEmail(ctx, contact.Email)
+	if err != nil {
+		return fmt.Errorf("campaign jobs: check exclusion: %w", err)
+	}
 	decision := consent.Evaluate(consent.Input{
 		Suppressed: contact.SuppressedAt != nil, SuppressionReason: campaign.Deref(contact.SuppressionReason),
 		Stage: campaign.Stage(contact.LifecycleStage), HasActiveConsent: hasConsent, ConsentSource: active.Source,
-		AllowSingleOptIn: audience.AllowSingleOptIn,
+		AllowSingleOptIn: audience.AllowSingleOptIn, Excluded: exclusion != nil,
 	})
 	if !decision.Eligible {
 		d.Log.Info("newsletter push refused at execution time", "subscription_id", sub.ID, "reason", decision.Reason)

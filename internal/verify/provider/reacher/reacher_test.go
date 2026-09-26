@@ -3,6 +3,7 @@ package reacher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -366,6 +367,81 @@ func TestCheckDoesNotRetryClientErrors(t *testing.T) {
 	}
 }
 
+// A 429 means the backend's per-minute quota is spent. Retrying within the backoff
+// only spends more of it, so the address is given up on at once.
+func TestCheckDoesNotRetryAThrottle(t *testing.T) {
+	var calls atomic.Int32
+	client, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}, func(c *Config) { c.Retries = 3 })
+
+	result := client.Check(context.Background(), "a@example.com")
+	if result.Status != provider.StatusUnavailable {
+		t.Errorf("status = %q, want %q", result.Status, provider.StatusUnavailable)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("a 429 was attempted %d times, want 1", got)
+	}
+}
+
+// The client must pace itself under the backend's throttle rather than discover it
+// through 429s.
+func TestCheckPacesRequests(t *testing.T) {
+	var calls atomic.Int32
+	client, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, `{"is_reachable":"safe"}`)
+	}, func(c *Config) {
+		c.RatePerMinute = 600 // one every 100ms
+		c.Concurrency = 8
+	})
+
+	started := time.Now()
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() { client.Check(context.Background(), "a@example.com") })
+	}
+	wg.Wait()
+
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("the backend was called %d times, want 4", got)
+	}
+	// The first request goes at once, the other three wait 100ms each.
+	if elapsed := time.Since(started); elapsed < 250*time.Millisecond {
+		t.Errorf("4 requests at 600/min finished in %s, want at least 300ms", elapsed)
+	}
+}
+
+// Timing out while waiting on our own rate limit says nothing about the backend's
+// health, so it must not open the breaker.
+func TestRateLimitWaitDoesNotTripTheBreaker(t *testing.T) {
+	var calls atomic.Int32
+	client, _ := newTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, `{"is_reachable":"safe"}`)
+	}, func(c *Config) {
+		c.RatePerMinute = 1 // one a minute: every call after the first must wait
+		c.Timeout = 50 * time.Millisecond
+		c.BreakerThreshold = 2
+		c.BreakerCooldown = time.Hour
+	})
+
+	client.Check(context.Background(), "a@example.com")
+	for i := range 5 {
+		result := client.Check(context.Background(), "a@example.com")
+		if result.Status != provider.StatusUnavailable {
+			t.Fatalf("call %d: status = %q, want %q", i, result.Status, provider.StatusUnavailable)
+		}
+		if errors.Is(result.Err, provider.ErrPaused) {
+			t.Fatalf("call %d: waiting on the local rate limit opened the breaker", i)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("the backend was called %d times, want 1", got)
+	}
+}
+
 /* -------------------------------------------------------------------- breaker */
 
 // A backend that is down must cost one connection attempt per cooldown, not one per
@@ -393,6 +469,9 @@ func TestBreakerStopsCallingADeadBackend(t *testing.T) {
 		result := client.Check(context.Background(), "a@example.com")
 		if result.Status.Contributes() {
 			t.Fatalf("call %d contributed to the score although the backend is failing", i)
+		}
+		if paused := errors.Is(result.Err, provider.ErrPaused); paused != (i >= 3) {
+			t.Errorf("call %d: paused = %v, want %v", i, paused, i >= 3)
 		}
 	}
 	if got := calls.Load(); got != 3 {

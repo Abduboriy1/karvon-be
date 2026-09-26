@@ -252,3 +252,26 @@ func StateName(state string) string {
 	}
 	return state
 }
+
+// usStateCodes is usStateNames inverted, keyed by lower-cased full name.
+var usStateCodes = func() map[string]string {
+	out := make(map[string]string, len(usStateNames))
+	for code, name := range usStateNames {
+		out[strings.ToLower(name)] = code
+	}
+	return out
+}()
+
+// StateCode folds a US state to its two-letter code, so rows scraped by a vendor
+// that returns "California" and one that returns "CA" land under the same value.
+// Anything it does not recognise is returned trimmed but otherwise unchanged.
+func StateCode(state string) string {
+	s := strings.Join(strings.Fields(state), " ")
+	if code, ok := usStateCodes[strings.ToLower(s)]; ok {
+		return code
+	}
+	if _, ok := usStateNames[strings.ToUpper(s)]; ok {
+		return strings.ToUpper(s)
+	}
+	return s
+}

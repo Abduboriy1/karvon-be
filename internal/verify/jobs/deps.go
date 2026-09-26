@@ -174,3 +174,17 @@ func clampInt32(v int) int32 {
 		return int32(v)
 	}
 }
+
+// exclusionSkip returns the skip note for a globally excluded address, or "". It is
+// re-checked by every item at execution time, because a rule can be added while a
+// run sits in the queue.
+func (d *Deps) exclusionSkip(ctx context.Context, email string) (string, error) {
+	ref, err := d.Store.MatchEmail(ctx, email)
+	if err != nil {
+		return "", fmt.Errorf("verify jobs: check exclusion: %w", err)
+	}
+	if ref == nil {
+		return "", nil
+	}
+	return fmt.Sprintf("skipped: globally excluded by %s %q", ref.Kind, ref.DisplayValue), nil
+}

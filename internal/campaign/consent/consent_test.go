@@ -108,3 +108,21 @@ func TestAnUnsubscribedContactIsNeverEligibleEvenWithConsent(t *testing.T) {
 		}
 	}
 }
+
+func TestConsentGateRefusesAnExcludedContactWhateverItsConsent(t *testing.T) {
+	d := Evaluate(Input{
+		Stage:            campaign.StagePermissionCaptured,
+		HasActiveConsent: true,
+		ConsentSource:    campaign.ConsentForm,
+		AllowSingleOptIn: true,
+		Excluded:         true,
+	})
+	if d.Eligible || d.Reason != ReasonExcluded || d.Explanation == "" {
+		t.Fatalf("excluded with consent: %+v", d)
+	}
+	// An unsubscribe is still reported as such: it is the stronger, permanent fact.
+	d = Evaluate(Input{Stage: campaign.StageUnsubscribed, Suppressed: true, SuppressionReason: campaign.SuppressUnsubscribed, Excluded: true})
+	if d.Reason != ReasonUnsubscribed {
+		t.Fatalf("excluded and unsubscribed: %+v", d)
+	}
+}

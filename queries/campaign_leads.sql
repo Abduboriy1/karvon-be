@@ -17,8 +17,9 @@ SELECT * FROM campaign_leads WHERE campaign_id = $1 AND instantly_lead_id = $2;
 SELECT * FROM campaign_leads WHERE contact_id = $1 ORDER BY created_at;
 
 -- name: ClaimPendingCampaignLeads :many
--- The push claim. A lead is claimed only while it is pending and its contact is not
--- suppressed, so a suppressed contact is never handed to the provider.
+-- The push claim. A lead is claimed only while it is pending, its contact is not
+-- suppressed and its address is not globally excluded, so neither is ever handed
+-- to the provider.
 UPDATE campaign_leads cl
 SET status = 'pushing', claimed_at = now(), push_attempts = push_attempts + 1, updated_at = now()
 FROM contacts c
@@ -26,6 +27,7 @@ WHERE cl.id IN (
     SELECT l.id FROM campaign_leads l
     JOIN contacts ct ON ct.id = l.contact_id
     WHERE l.campaign_id = sqlc.arg('campaign_id') AND l.status = 'pending' AND ct.suppressed_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = ct.email)
     ORDER BY l.created_at
     LIMIT sqlc.arg('lim')
     FOR UPDATE OF l SKIP LOCKED)
@@ -38,8 +40,10 @@ SET status = 'pending', claimed_at = NULL, last_push_error = sqlc.narg('error'),
 WHERE campaign_id = sqlc.arg('campaign_id') AND status = 'pushing' AND id = ANY(sqlc.arg('ids')::uuid[]);
 
 -- name: MarkCampaignLeadPushed :one
+-- A lead the exclusion sweep stopped while its push was in flight stays excluded;
+-- the caller sees that and removes it from the provider again.
 UPDATE campaign_leads
-SET status = 'active', instantly_lead_id = sqlc.narg('instantly_lead_id'), instantly_status = 1,
+SET status = CASE WHEN status = 'excluded' THEN 'excluded' ELSE 'active' END, instantly_lead_id = sqlc.narg('instantly_lead_id'), instantly_status = 1,
     pushed_at = COALESCE(pushed_at, now()), claimed_at = NULL, last_push_error = NULL,
     custom_vars = sqlc.arg('custom_vars'), updated_at = now()
 WHERE id = sqlc.arg('id')
@@ -123,7 +127,8 @@ SELECT status, count(*)::bigint AS total FROM campaign_leads WHERE campaign_id =
 -- name: CountPendingCampaignLeads :one
 SELECT count(*) FROM campaign_leads cl
 JOIN contacts c ON c.id = cl.contact_id
-WHERE cl.campaign_id = $1 AND cl.status = 'pending' AND c.suppressed_at IS NULL;
+WHERE cl.campaign_id = $1 AND cl.status = 'pending' AND c.suppressed_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = c.email);
 
 -- name: ListPushedCampaignLeads :many
 SELECT * FROM campaign_leads WHERE campaign_id = $1 AND instantly_lead_id IS NOT NULL ORDER BY created_at;

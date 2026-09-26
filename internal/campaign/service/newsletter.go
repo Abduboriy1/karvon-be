@@ -198,12 +198,22 @@ func (s *Service) ListEligible(ctx context.Context, campaignID *uuid.UUID, audie
 	if err != nil {
 		return Page[EligibleContact]{}, apperr.Internal(err)
 	}
+	emails := make([]string, 0, len(rows))
+	for _, r := range rows {
+		emails = append(emails, r.Email)
+	}
+	excluded, err := s.store.ExcludedEmails(ctx, emails)
+	if err != nil {
+		return Page[EligibleContact]{}, apperr.Internal(err)
+	}
 	out := make([]EligibleContact, 0, len(rows))
 	for _, r := range rows {
+		_, isExcluded := excluded[strings.ToLower(r.Email)]
 		out = append(out, EligibleContact{Contact: r, Decision: consent.Evaluate(consent.Input{
 			Suppressed: r.SuppressedAt != nil, SuppressionReason: campaign.Deref(r.SuppressionReason),
 			Stage: campaign.Stage(r.LifecycleStage), HasActiveConsent: r.ConsentID.Valid,
 			ConsentSource: campaign.Deref(r.ConsentSource), AllowSingleOptIn: audience.AllowSingleOptIn,
+			Excluded: isExcluded,
 		})})
 	}
 	return Page[EligibleContact]{Rows: out, Total: total}, nil
@@ -254,10 +264,14 @@ func (s *Service) PushSubscriptions(ctx context.Context, contactIDs []uuid.UUID,
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return PushResult{}, apperr.Internal(err)
 		}
+		exclusion, err := s.store.MatchEmail(ctx, contact.Email)
+		if err != nil {
+			return PushResult{}, apperr.Internal(err)
+		}
 		decision := consent.Evaluate(consent.Input{
 			Suppressed: contact.SuppressedAt != nil, SuppressionReason: campaign.Deref(contact.SuppressionReason),
 			Stage: campaign.Stage(contact.LifecycleStage), HasActiveConsent: hasConsent, ConsentSource: active.Source,
-			AllowSingleOptIn: audience.AllowSingleOptIn,
+			AllowSingleOptIn: audience.AllowSingleOptIn, Excluded: exclusion != nil,
 		})
 		if !decision.Eligible {
 			result.Rejected = append(result.Rejected, PushRejection{ContactID: contactID, Reason: decision.Reason})

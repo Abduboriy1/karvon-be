@@ -55,3 +55,21 @@ func TestPointerHelpersTreatZeroAsAbsent(t *testing.T) {
 		t.Errorf("PtrInt32(7) = %v", got)
 	}
 }
+
+func TestStateCodeFoldsNamesAndCodes(t *testing.T) {
+	cases := map[string]string{
+		"California":           "CA",
+		" california ":         "CA",
+		"CA":                   "CA",
+		"ca":                   "CA",
+		"New  York":            "NY",
+		"District of Columbia": "DC",
+		"Ontario":              "Ontario",
+		"":                     "",
+	}
+	for in, want := range cases {
+		if got := StateCode(in); got != want {
+			t.Errorf("StateCode(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

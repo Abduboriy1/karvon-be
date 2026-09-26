@@ -27,7 +27,7 @@ VALUES ($1, $2, $3, $4,
         $5, false)
 ON CONFLICT (business_id, email) DO UPDATE
     SET page_url = COALESCE(business_emails.page_url, EXCLUDED.page_url)
-RETURNING id, business_id, email, source, page_url, is_primary, found_at
+RETURNING id, business_id, email, source, page_url, is_primary, found_at, domain_suffixes
 `
 
 type InsertBusinessEmailParams struct {
@@ -55,12 +55,13 @@ func (q *Queries) InsertBusinessEmail(ctx context.Context, arg InsertBusinessEma
 		&i.PageUrl,
 		&i.IsPrimary,
 		&i.FoundAt,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
 
 const listBusinessEmails = `-- name: ListBusinessEmails :many
-SELECT id, business_id, email, source, page_url, is_primary, found_at FROM business_emails
+SELECT id, business_id, email, source, page_url, is_primary, found_at, domain_suffixes FROM business_emails
 WHERE business_id = $1
 ORDER BY is_primary DESC, found_at, email
 `
@@ -82,6 +83,7 @@ func (q *Queries) ListBusinessEmails(ctx context.Context, businessID uuid.UUID) 
 			&i.PageUrl,
 			&i.IsPrimary,
 			&i.FoundAt,
+			&i.DomainSuffixes,
 		); err != nil {
 			return nil, err
 		}
@@ -94,7 +96,7 @@ func (q *Queries) ListBusinessEmails(ctx context.Context, businessID uuid.UUID) 
 }
 
 const listBusinessEmailsWithVerification = `-- name: ListBusinessEmailsWithVerification :many
-SELECT be.id, be.business_id, be.email, be.source, be.page_url, be.is_primary, be.found_at,
+SELECT be.id, be.business_id, be.email, be.source, be.page_url, be.is_primary, be.found_at, be.domain_suffixes,
        ev.id               AS verification_id,
        ev.final_score      AS verification_score,
        ev.verification_tag AS verification_tag,
@@ -117,6 +119,7 @@ type ListBusinessEmailsWithVerificationRow struct {
 	PageUrl           *string
 	IsPrimary         bool
 	FoundAt           time.Time
+	DomainSuffixes    []string
 	VerificationID    uuid.NullUUID
 	VerificationScore *int32
 	VerificationTag   *string
@@ -146,6 +149,7 @@ func (q *Queries) ListBusinessEmailsWithVerification(ctx context.Context, busine
 			&i.PageUrl,
 			&i.IsPrimary,
 			&i.FoundAt,
+			&i.DomainSuffixes,
 			&i.VerificationID,
 			&i.VerificationScore,
 			&i.VerificationTag,

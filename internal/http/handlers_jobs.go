@@ -19,7 +19,7 @@ type jobCreateRequest struct {
 }
 
 type jobConfigRequest struct {
-	Terms     []string          `json:"terms" validate:"required,min=1,max=20,dive,required,max=120"`
+	Terms     []string          `json:"terms" validate:"required,min=1,max=50,dive,required,max=120"`
 	Locations []locationRequest `json:"locations" validate:"omitempty,max=300,dive"`
 	// -1 asks for every place in the area; the range is checked in the service, which
 	// owns the meaning of that value.

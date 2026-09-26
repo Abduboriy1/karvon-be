@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/bory/karvon-be/internal/business"
@@ -110,6 +111,7 @@ func toAPIBusiness(row db.BusinessRow, socials []dbgen.BusinessSocial) gen.Busin
 		Lat:                        row.Lat,
 		Lng:                        row.Lng,
 		Suppressed:                 row.Suppressed,
+		Exclusion:                  toAPIExclusionRef(row.Exclusion),
 		Notes:                      row.Notes,
 		FirstJobId:                 row.FirstJobID,
 		PrimaryEmail:               row.PrimaryEmail,
@@ -153,6 +155,7 @@ func toAPIBusinessDetail(detail business.Detail) gen.BusinessDetail {
 		Lat:         row.Lat,
 		Lng:         row.Lng,
 		Suppressed:  row.Suppressed,
+		Exclusion:   toAPIExclusionRef(detail.Exclusion),
 		Notes:       row.Notes,
 		EmailsCount: &emailsCount,
 		CreatedAt:   utc(row.CreatedAt),
@@ -187,7 +190,11 @@ func toAPIBusinessDetail(detail business.Detail) gen.BusinessDetail {
 
 	emails := make([]gen.BusinessEmail, 0, len(detail.Emails))
 	for _, email := range detail.Emails {
-		emails = append(emails, toAPIEmail(email))
+		mapped := toAPIEmail(email)
+		if ref, ok := detail.EmailExclusions[strings.ToLower(email.Email)]; ok {
+			mapped.Exclusion = toAPIExclusionRef(&ref)
+		}
+		emails = append(emails, mapped)
 	}
 	out.Emails = &emails
 
@@ -316,6 +323,7 @@ func toAPIVerification(row db.VerificationRow) gen.EmailVerification {
 		TypoSuggestion:   row.TypoSuggestion,
 		LastError:        row.LastError,
 		BusinessCount:    int(row.BusinessCount),
+		Exclusion:        toAPIExclusionRef(row.Exclusion),
 		UpdatedAt:        utc(row.UpdatedAt),
 	}
 	if row.Pass2Score != nil {
@@ -349,6 +357,7 @@ func toAPIVerificationDetail(detail verify.Detail) gen.EmailVerificationDetail {
 		TypoSuggestion:   row.TypoSuggestion,
 		LastError:        row.LastError,
 		BusinessCount:    len(detail.Businesses),
+		Exclusion:        toAPIExclusionRef(detail.Exclusion),
 		UpdatedAt:        utc(row.UpdatedAt),
 	}
 	if row.Pass2Score != nil {

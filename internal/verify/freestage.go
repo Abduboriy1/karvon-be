@@ -2,6 +2,7 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -146,7 +147,12 @@ func (s *FreeStage) Run(ctx context.Context, settings Settings, email string) Fr
 			if result.Duration == 0 {
 				result.Duration = time.Since(started)
 			}
-			if result.Status == provider.StatusError || result.Status == provider.StatusUnavailable {
+			switch {
+			case errors.Is(result.Err, provider.ErrPaused):
+				// The provider logged once when it paused; once per address is spam.
+				s.log.Debug("a verification provider is paused",
+					"provider", key, "email", email)
+			case result.Status == provider.StatusError || result.Status == provider.StatusUnavailable:
 				s.log.Warn("a verification provider did not answer",
 					"provider", key, "email", email, "status", result.Status, "error", result.Error)
 			}

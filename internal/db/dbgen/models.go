@@ -34,38 +34,42 @@ type AiGeneration struct {
 }
 
 type Business struct {
-	ID            uuid.UUID
-	PlaceID       *string
-	Name          string
-	Category      *string
-	Address       *string
-	City          *string
-	State         *string
-	Zip           *string
-	Phone         *string
-	Website       *string
-	Domain        *string
-	Rating        *float64
-	Reviews       *int32
-	Lat           *float64
-	Lng           *float64
-	Raw           []byte
-	FirstJobID    uuid.NullUUID
-	Suppressed    bool
-	Notes         *string
-	LastCrawledAt *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID             uuid.UUID
+	PlaceID        *string
+	Name           string
+	Category       *string
+	Address        *string
+	City           *string
+	State          *string
+	Zip            *string
+	Phone          *string
+	Website        *string
+	Domain         *string
+	Rating         *float64
+	Reviews        *int32
+	Lat            *float64
+	Lng            *float64
+	Raw            []byte
+	FirstJobID     uuid.NullUUID
+	Suppressed     bool
+	Notes          *string
+	LastCrawledAt  *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	NameKey        *string
+	NamePrefixes   []string
+	DomainSuffixes []string
 }
 
 type BusinessEmail struct {
-	ID         uuid.UUID
-	BusinessID uuid.UUID
-	Email      string
-	Source     string
-	PageUrl    *string
-	IsPrimary  bool
-	FoundAt    time.Time
+	ID             uuid.UUID
+	BusinessID     uuid.UUID
+	Email          string
+	Source         string
+	PageUrl        *string
+	IsPrimary      bool
+	FoundAt        time.Time
+	DomainSuffixes []string
 }
 
 type BusinessSocial struct {
@@ -187,6 +191,10 @@ type Contact struct {
 	LastEventAt       *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	DomainSuffixes    []string
+	WebsiteSuffixes   []string
+	CompanyKey        *string
+	CompanyPrefixes   []string
 }
 
 type ContactConsent struct {
@@ -325,6 +333,31 @@ type EmailVerification struct {
 	FreeScoredAt     *time.Time
 	ProviderResults  []byte
 	ThirdPartySentAt *time.Time
+	DomainSuffixes   []string
+}
+
+type GlobalExcludedAddress struct {
+	Email       string
+	ExclusionID uuid.UUID
+}
+
+type GlobalExcludedBusiness struct {
+	BusinessID  uuid.UUID
+	ExclusionID uuid.UUID
+}
+
+type GlobalExclusion struct {
+	ID           uuid.UUID
+	Kind         string
+	Value        string
+	DisplayValue string
+	MatchMode    string
+	Reason       *string
+	Source       string
+	SourceRefID  uuid.NullUUID
+	CreatedAt    time.Time
+	RemovedAt    *time.Time
+	RemovedNote  *string
 }
 
 type Job struct {
@@ -437,6 +470,15 @@ type ProviderEvent struct {
 	ProcessedAt    *time.Time
 	Attempts       int32
 	Error          *string
+}
+
+type ScrapeCategory struct {
+	ID        uuid.UUID
+	Name      string
+	Terms     []string
+	IsDefault bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type SendingAccount struct {

@@ -150,6 +150,8 @@ type Detail struct {
 	// weight it carried and the points it contributed.
 	Providers  []ProviderScore
 	Businesses []dbgen.ListBusinessesForEmailRow
+	// Exclusion is the global exclusion rule covering the address, or nil.
+	Exclusion *db.ExclusionRef
 }
 
 // Get returns one address or a 404.
@@ -174,7 +176,11 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (Detail, error) {
 	if err != nil {
 		return Detail{}, apperr.Internal(err)
 	}
-	return Detail{Row: row, Checks: checks, Providers: providers, Businesses: businesses}, nil
+	exclusion, err := s.store.MatchEmail(ctx, row.Email)
+	if err != nil {
+		return Detail{}, apperr.Internal(err)
+	}
+	return Detail{Row: row, Checks: checks, Providers: providers, Businesses: businesses, Exclusion: exclusion}, nil
 }
 
 // DecodeChecks parses a stored breakdown.
@@ -329,14 +335,17 @@ func (s *Service) cachedBalance(ctx context.Context, source dbgen.Source) *int64
 
 /* ----------------------------------------------------------------- estimate */
 
-// baseFilter turns a submitted run filter into a data-layer filter.
+// baseFilter turns a submitted run filter into a data-layer filter. A globally
+// excluded address is never a candidate, whatever the filter asks for.
 func (s *Service) baseFilter(filter RunFilter) db.VerificationFilter {
+	notExcluded := false
 	out := db.VerificationFilter{
 		BusinessIDs:       filter.BusinessIDs,
 		JobID:             filter.JobID,
 		Tags:              filter.Tags,
 		MinScore:          filter.MinScore,
 		IncludeSuppressed: filter.IncludeSuppressed,
+		Excluded:          &notExcluded,
 	}
 	if filter.Scope == ScopeSelection {
 		out.IDs = filter.IDs
@@ -624,6 +633,9 @@ func (s *Service) VerifyOne(ctx context.Context, id uuid.UUID, pass Pass) (dbgen
 		return dbgen.VerificationRun{}, err
 	}
 
+	if err := s.checkExclusion(ctx, detail.Row.Email); err != nil {
+		return dbgen.VerificationRun{}, err
+	}
 	if pass == PassThirdParty {
 		if err := s.checkGate(ctx, detail.Row); err != nil {
 			return dbgen.VerificationRun{}, err
@@ -648,6 +660,19 @@ func (s *Service) VerifyOne(ctx context.Context, id uuid.UUID, pass Pass) (dbgen
 		input.MaxCostCents = &ceiling
 	}
 	return s.CreateRun(ctx, input)
+}
+
+// checkExclusion refuses to verify a globally excluded address, free or paid.
+func (s *Service) checkExclusion(ctx context.Context, email string) error {
+	ref, err := s.store.MatchEmail(ctx, email)
+	if err != nil {
+		return apperr.Internal(err)
+	}
+	if ref != nil {
+		return apperr.Conflict("%s is globally excluded (%s %q); remove the exclusion to verify it",
+			email, ref.Kind, ref.DisplayValue)
+	}
+	return nil
 }
 
 // checkGate rejects a paid verification the pipeline would refuse anyway, so the

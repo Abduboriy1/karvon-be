@@ -32,6 +32,9 @@ type VerificationFilter struct {
 	Q *string
 	// IncludeSuppressed keeps addresses whose only businesses are suppressed.
 	IncludeSuppressed bool
+	// Excluded keeps only globally excluded addresses (true), hides them (false),
+	// or ignores exclusion (nil). Every run and estimate sets false.
+	Excluded *bool
 
 	// FreeComplete keeps rows that have (or have not) been through the free stage.
 	FreeComplete *bool
@@ -74,6 +77,9 @@ type VerificationRow struct {
 	LastError        *string
 	BusinessCount    int64
 	UpdatedAt        time.Time
+	// Exclusion is the global exclusion rule covering the address, or nil. Only
+	// the list query fills it.
+	Exclusion *ExclusionRef
 }
 
 var verificationSorts = map[string]sortSpec{
@@ -161,6 +167,10 @@ func buildVerificationWhere(f VerificationFilter, a *argSet) string {
 		}
 	}
 
+	if f.Excluded != nil {
+		conds = append(conds, excludedEmailCond("ev.email", *f.Excluded))
+	}
+
 	if scope := buildAddressScope(f, a, "ev.email"); scope != "" {
 		conds = append(conds, scope)
 	}
@@ -233,7 +243,14 @@ func (s *Store) ListVerifications(ctx context.Context, f VerificationFilter, sor
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	err = annotateExclusions(ctx, s, out, func(r *VerificationRow) string { return r.Email },
+		func(r *VerificationRow, ref *ExclusionRef) { r.Exclusion = ref })
+	return out, err
 }
 
 // SelectVerificationIDs resolves a filter into the rows a run will process. The
@@ -272,6 +289,9 @@ func (s *Store) ListAddressesWithoutVerification(ctx context.Context, f Verifica
 	if scope != "" {
 		conds = append(conds, scope)
 	}
+	if f.Excluded != nil {
+		conds = append(conds, excludedEmailCond("be2.email", *f.Excluded))
+	}
 
 	query := "SELECT DISTINCT be2.email::text FROM business_emails be2 WHERE " +
 		strings.Join(conds, " AND ") + " ORDER BY 1 LIMIT " + a.add(limit)
@@ -302,6 +322,9 @@ func (s *Store) CountAddressesWithoutVerification(ctx context.Context, f Verific
 	conds := []string{"NOT EXISTS (SELECT 1 FROM email_verifications ev WHERE ev.email = be2.email)"}
 	if scope != "" {
 		conds = append(conds, scope)
+	}
+	if f.Excluded != nil {
+		conds = append(conds, excludedEmailCond("be2.email", *f.Excluded))
 	}
 
 	query := "SELECT count(DISTINCT be2.email) FROM business_emails be2 WHERE " +

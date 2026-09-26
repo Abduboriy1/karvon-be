@@ -116,8 +116,10 @@ func ParseOutput(raw string) (Output, error) {
 		if ref.Name = strings.TrimSpace(ref.Name); ref.Name == "" {
 			ref.Name = "Variant " + strconv.Itoa(len(out.Variants)+1)
 		}
-		if len(ref.Name) > MaxNameLen {
-			ref.Name = ref.Name[:MaxNameLen]
+		// Truncate on characters, not bytes: slicing bytes can split a multi-byte
+		// rune and store invalid UTF-8.
+		if runes := []rune(ref.Name); len(runes) > MaxNameLen {
+			ref.Name = string(runes[:MaxNameLen])
 		}
 		out.Variants = append(out.Variants, ref)
 	}

@@ -174,9 +174,18 @@ func (w *PushLeadsWorker) afterBatch(ctx context.Context, camp dbgen.Campaign) e
 
 func (w *PushLeadsWorker) markPushed(ctx context.Context, camp dbgen.Campaign, lead dbgen.CampaignLead, providerID string, vars map[string]any) error {
 	d := w.deps
-	return d.Store.InTx(ctx, func(q *dbgen.Queries) error {
-		if _, err := q.MarkCampaignLeadPushed(ctx, dbgen.MarkCampaignLeadPushedParams{ID: lead.ID, InstantlyLeadID: &providerID, CustomVars: service.EncodeCustomVars(vars)}); err != nil {
+	return d.Store.InTxRaw(ctx, func(tx pgx.Tx) error {
+		q := dbgen.New(tx)
+		pushed, err := q.MarkCampaignLeadPushed(ctx, dbgen.MarkCampaignLeadPushedParams{ID: lead.ID, InstantlyLeadID: &providerID, CustomVars: service.EncodeCustomVars(vars)})
+		if err != nil {
 			return fmt.Errorf("mark pushed: %w", err)
+		}
+		if pushed.Status == campaign.LeadExcluded {
+			// A global exclusion landed while this push was in flight; the sweep
+			// could not remove what Instantly had not created yet, so do it now.
+			if err := d.enqueueTx(ctx, tx, campaign.RemoveLeadArgs{CampaignLeadID: lead.ID}); err != nil {
+				return err
+			}
 		}
 		if err := q.LockVariantAssignments(ctx, lead.ID); err != nil {
 			return fmt.Errorf("lock assignments: %w", err)

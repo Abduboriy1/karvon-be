@@ -1,10 +1,13 @@
 package verify
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +133,36 @@ func TestFreeStageSurvivesAProviderOutage(t *testing.T) {
 	if result.Score.Contributors() < 2 {
 		t.Errorf("contributors = %d, want the remaining providers to carry the score",
 			result.Score.Contributors())
+	}
+}
+
+// A provider behind an open breaker already reported the outage once, so the stage
+// must not warn again for every address; a genuine failure still warns.
+func TestFreeStageDoesNotWarnForAPausedProvider(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantWarn bool
+	}{
+		{name: "paused", err: fmt.Errorf("reacher: %w", provider.ErrPaused), wantWarn: false},
+		{name: "failing", err: errors.New("connection refused"), wantWarn: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			down := &fakeProvider{
+				key:    provider.KeyReacher,
+				result: provider.Unavailable(provider.KeyReacher, tc.err, "the backend is unavailable"),
+			}
+			stage := testStage(t, down)
+			var logs bytes.Buffer
+			stage.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+			stage.Run(context.Background(), stageSettings(), "jane.doe@karvon-example.com")
+
+			if warned := strings.Contains(logs.String(), "level=WARN"); warned != tc.wantWarn {
+				t.Errorf("warned = %v, want %v; logs:\n%s", warned, tc.wantWarn, logs.String())
+			}
+		})
 	}
 }
 

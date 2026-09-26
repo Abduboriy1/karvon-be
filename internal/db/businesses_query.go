@@ -12,13 +12,16 @@ import (
 
 // BusinessFilter is the shared filter set for listing and exporting businesses.
 type BusinessFilter struct {
-	JobID       *uuid.UUID
-	Category    *string
-	State       *string
-	City        *string
-	Q           *string
-	HasEmail    *bool
-	Suppressed  *bool
+	JobID      *uuid.UUID
+	Category   *string
+	State      *string
+	City       *string
+	Q          *string
+	HasEmail   *bool
+	Suppressed *bool
+	// Excluded keeps only globally excluded businesses (true), hides them (false),
+	// or ignores exclusion (nil).
+	Excluded    *bool
 	EmailSource *string
 	// VerificationTags filters on the tag of the business's primary address.
 	VerificationTags []string
@@ -55,6 +58,9 @@ type BusinessRow struct {
 	PrimaryEmailTag    *string
 	PrimaryEmailScore  *int32
 	EmailsCount        int64
+	// Exclusion is the global exclusion rule covering the business, or nil. Only
+	// the list query fills it.
+	Exclusion *ExclusionRef
 	// AllEmails is only populated by the export query.
 	AllEmails *string
 }
@@ -100,6 +106,24 @@ const businessEmailJoins = `
     ) pe ON true
     LEFT JOIN LATERAL (
         SELECT count(*) AS cnt FROM business_emails be WHERE be.business_id = b.id
+    ) ec ON true`
+
+// exportEmailJoins is businessEmailJoins for a CSV that may end up in an outreach
+// tool: a globally excluded address is never the primary email, nor counted.
+var exportEmailJoins = `
+    LEFT JOIN jobs fj ON fj.id = b.first_job_id
+    LEFT JOIN LATERAL (
+        SELECT be.email::text AS email, be.source,
+               ev.verification_tag, ev.final_score AS verification_score
+        FROM business_emails be
+                 LEFT JOIN email_verifications ev ON ev.email = be.email
+        WHERE be.business_id = b.id AND ` + excludedEmailCond("be.email", false) + `
+        ORDER BY be.is_primary DESC, be.found_at, be.email
+        LIMIT 1
+    ) pe ON true
+    LEFT JOIN LATERAL (
+        SELECT count(*) AS cnt FROM business_emails be
+        WHERE be.business_id = b.id AND ` + excludedEmailCond("be.email", false) + `
     ) ec ON true`
 
 // buildBusinessWhere renders the FROM and WHERE fragments for a filter.
@@ -153,6 +177,9 @@ func buildBusinessWhere(f BusinessFilter, a *argSet) (from string, where string)
 		suppressed = *f.Suppressed
 	}
 	conds = append(conds, "b.suppressed = "+a.add(suppressed))
+	if f.Excluded != nil {
+		conds = append(conds, excludedBusinessCond("b.id", *f.Excluded))
+	}
 
 	return joins.String(), " WHERE " + strings.Join(conds, " AND ")
 }
@@ -213,19 +240,42 @@ func (s *Store) ListBusinesses(ctx context.Context, f BusinessFilter, sort strin
 		}
 		out = append(out, row)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+
+	ids := make([]uuid.UUID, len(out))
+	for i := range out {
+		ids[i] = out[i].ID
+	}
+	excluded, err := s.ExcludedBusinesses(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if ref, ok := excluded[out[i].ID]; ok {
+			out[i].Exclusion = &ref
+		}
+	}
+	return out, nil
 }
 
 // StreamBusinessesForExport walks every matching row in id order and hands each one to
 // fn. Rows are never buffered, so a CSV of any size streams in constant memory.
+//
+// An export is a contact list, so it never carries a globally excluded business or
+// address, whatever the filter says.
 func (s *Store) StreamBusinessesForExport(ctx context.Context, f BusinessFilter, fn func(BusinessRow) error) error {
+	notExcluded := false
+	f.Excluded = &notExcluded
 	a := &argSet{}
 	from, where := buildBusinessWhere(f, a)
 
 	q := "SELECT" + businessSelectColumns + `,
     (SELECT string_agg(be.email::text, ';' ORDER BY be.is_primary DESC, be.email)
-     FROM business_emails be WHERE be.business_id = b.id) AS all_emails` +
-		from + businessEmailJoins + where + " ORDER BY b.created_at DESC, b.id DESC"
+     FROM business_emails be WHERE be.business_id = b.id AND ` + excludedEmailCond("be.email", false) + `) AS all_emails` +
+		from + exportEmailJoins + where + " ORDER BY b.created_at DESC, b.id DESC"
 
 	rows, err := s.pool.Query(ctx, q, a.values()...)
 	if err != nil {

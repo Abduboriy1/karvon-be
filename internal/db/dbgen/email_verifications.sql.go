@@ -17,7 +17,7 @@ SET third_party_sent_at = now(),
     updated_at          = now()
 WHERE id = $1
   AND third_party_sent_at IS NULL
-RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at
+RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at, domain_suffixes
 `
 
 // The hard check that stops an address reaching a third party twice.
@@ -53,6 +53,7 @@ func (q *Queries) ClaimThirdPartySend(ctx context.Context, id uuid.UUID) (EmailV
 		&i.FreeScoredAt,
 		&i.ProviderResults,
 		&i.ThirdPartySentAt,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
@@ -93,7 +94,7 @@ func (q *Queries) DeleteShadowedBusinessEmails(ctx context.Context, arg DeleteSh
 }
 
 const getEmailVerification = `-- name: GetEmailVerification :one
-SELECT id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at FROM email_verifications WHERE id = $1
+SELECT id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at, domain_suffixes FROM email_verifications WHERE id = $1
 `
 
 func (q *Queries) GetEmailVerification(ctx context.Context, id uuid.UUID) (EmailVerification, error) {
@@ -123,12 +124,13 @@ func (q *Queries) GetEmailVerification(ctx context.Context, id uuid.UUID) (Email
 		&i.FreeScoredAt,
 		&i.ProviderResults,
 		&i.ThirdPartySentAt,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
 
 const getEmailVerificationByEmail = `-- name: GetEmailVerificationByEmail :one
-SELECT id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at FROM email_verifications WHERE email = $1
+SELECT id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at, domain_suffixes FROM email_verifications WHERE email = $1
 `
 
 func (q *Queries) GetEmailVerificationByEmail(ctx context.Context, email string) (EmailVerification, error) {
@@ -158,6 +160,7 @@ func (q *Queries) GetEmailVerificationByEmail(ctx context.Context, email string)
 		&i.FreeScoredAt,
 		&i.ProviderResults,
 		&i.ThirdPartySentAt,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
@@ -289,7 +292,7 @@ SET pass1_score       = $1,
     last_error        = NULL,
     updated_at        = now()
 WHERE id = $9
-RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at
+RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at, domain_suffixes
 `
 
 type UpdateVerificationPass1Params struct {
@@ -344,6 +347,7 @@ func (q *Queries) UpdateVerificationPass1(ctx context.Context, arg UpdateVerific
 		&i.FreeScoredAt,
 		&i.ProviderResults,
 		&i.ThirdPartySentAt,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
@@ -361,7 +365,7 @@ SET pass2_score       = $1,
     last_error        = NULL,
     updated_at        = now()
 WHERE id = $8
-RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at
+RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at, domain_suffixes
 `
 
 type UpdateVerificationPass2Params struct {
@@ -413,6 +417,7 @@ func (q *Queries) UpdateVerificationPass2(ctx context.Context, arg UpdateVerific
 		&i.FreeScoredAt,
 		&i.ProviderResults,
 		&i.ThirdPartySentAt,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
@@ -425,7 +430,7 @@ SET pass2_status  = $1,
     last_error    = $4,
     updated_at    = now()
 WHERE id = $5
-RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at
+RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at, domain_suffixes
 `
 
 type UpdateVerificationPass2InconclusiveParams struct {
@@ -473,6 +478,7 @@ func (q *Queries) UpdateVerificationPass2Inconclusive(ctx context.Context, arg U
 		&i.FreeScoredAt,
 		&i.ProviderResults,
 		&i.ThirdPartySentAt,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }
@@ -481,7 +487,7 @@ const upsertEmailVerification = `-- name: UpsertEmailVerification :one
 INSERT INTO email_verifications (id, email, domain)
 VALUES ($1, $2, $3)
 ON CONFLICT (email) DO UPDATE SET updated_at = email_verifications.updated_at
-RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at
+RETURNING id, email, domain, pass1_score, pass1_checks, pass1_hard_fail, pass1_verified_at, pass2_score, pass2_status, pass2_raw, pass2_source_id, pass2_credits, pass2_verified_at, final_score, verification_tag, typo_suggestion, last_error, created_at, updated_at, free_score, free_scored_at, provider_results, third_party_sent_at, domain_suffixes
 `
 
 type UpsertEmailVerificationParams struct {
@@ -519,6 +525,7 @@ func (q *Queries) UpsertEmailVerification(ctx context.Context, arg UpsertEmailVe
 		&i.FreeScoredAt,
 		&i.ProviderResults,
 		&i.ThirdPartySentAt,
+		&i.DomainSuffixes,
 	)
 	return i, err
 }

@@ -95,6 +95,10 @@ func (i *Ingestor) resolveBusiness(
 	website, domain *string,
 	raw []byte,
 ) (uuid.UUID, error) {
+	// Vendors disagree on "CA" vs "California"; store the code so the state filter
+	// matches every row.
+	listing.State = provider.StateCode(listing.State)
+
 	if listing.PlaceID != "" {
 		row, err := q.UpsertBusinessByPlaceID(ctx, dbgen.UpsertBusinessByPlaceIDParams{
 			ID:         ids.New(),

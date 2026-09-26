@@ -185,7 +185,8 @@ func (w *SyncCampaignWorker) mirrorLead(ctx context.Context, camp dbgen.Campaign
 	}
 	status := instantly.LeadStatus(remote.Status)
 	switch lead.Status {
-	case campaign.LeadSuppressed, campaign.LeadSkipped, campaign.LeadFailed, campaign.LeadPending, campaign.LeadPushing:
+	case campaign.LeadSuppressed, campaign.LeadSkipped, campaign.LeadFailed, campaign.LeadPending, campaign.LeadPushing,
+		campaign.LeadExcluded:
 		status = lead.Status // our own states are not overwritten by the mirror
 	case campaign.LeadReplied:
 		if status == campaign.LeadActive || status == campaign.LeadCompleted || status == campaign.LeadPaused {
@@ -258,6 +259,13 @@ func (w *SyncCampaignWorker) mirrorLead(ctx context.Context, camp dbgen.Campaign
 			}
 			if send, err := q.GetLatestEmailSendForLead(ctx, lead.ID); err == nil && send.ReplyClassification == nil {
 				_ = q.SetSendReplyClassification(ctx, dbgen.SetSendReplyClassificationParams{ID: send.ID, Classification: campaign.Ptr(campaign.ReplyPositive)})
+			}
+		}
+		// An excluded lead that Instantly still holds is removed again: the first
+		// removal failed, or raced the push.
+		if lead.Status == campaign.LeadExcluded && remote.ID != "" {
+			if err := d.enqueueTx(ctx, tx, campaign.RemoveLeadArgs{CampaignLeadID: lead.ID}); err != nil {
+				return err
 			}
 		}
 		// Terminal states at Instantly become suppressions here, through the

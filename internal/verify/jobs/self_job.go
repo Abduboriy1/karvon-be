@@ -49,6 +49,14 @@ func (w *SelfWorker) Work(ctx context.Context, rj *river.Job[verify.SelfArgs]) e
 		return fmt.Errorf("verify jobs: load verification: %w", err)
 	}
 
+	// A rule added while the run was queued still stops the address here.
+	if skip, err := d.exclusionSkip(ctx, row.Email); err != nil || skip != "" {
+		if err != nil {
+			return err
+		}
+		return d.finishItem(ctx, runID, verificationID, verify.ItemSkipped, 0, skip)
+	}
+
 	// Settings are read here rather than trusted from when the run was created, so
 	// an operator who re-balances the weights mid-run affects the rest of it.
 	settings := d.Settings.Settings(ctx)

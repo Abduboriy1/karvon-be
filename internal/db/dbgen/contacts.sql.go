@@ -208,7 +208,7 @@ func (q *Queries) GetActiveSuppression(ctx context.Context, contactID uuid.UUID)
 }
 
 const getContact = `-- name: GetContact :one
-SELECT id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at FROM contacts WHERE id = $1
+SELECT id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at, domain_suffixes, website_suffixes, company_key, company_prefixes FROM contacts WHERE id = $1
 `
 
 func (q *Queries) GetContact(ctx context.Context, id uuid.UUID) (Contact, error) {
@@ -234,12 +234,16 @@ func (q *Queries) GetContact(ctx context.Context, id uuid.UUID) (Contact, error)
 		&i.LastEventAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DomainSuffixes,
+		&i.WebsiteSuffixes,
+		&i.CompanyKey,
+		&i.CompanyPrefixes,
 	)
 	return i, err
 }
 
 const getContactByEmail = `-- name: GetContactByEmail :one
-SELECT id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at FROM contacts WHERE email = $1
+SELECT id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at, domain_suffixes, website_suffixes, company_key, company_prefixes FROM contacts WHERE email = $1
 `
 
 func (q *Queries) GetContactByEmail(ctx context.Context, email string) (Contact, error) {
@@ -265,6 +269,10 @@ func (q *Queries) GetContactByEmail(ctx context.Context, email string) (Contact,
 		&i.LastEventAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DomainSuffixes,
+		&i.WebsiteSuffixes,
+		&i.CompanyKey,
+		&i.CompanyPrefixes,
 	)
 	return i, err
 }
@@ -322,7 +330,7 @@ SET suppressed_at      = NULL,
     last_event_at      = now(),
     updated_at         = now()
 WHERE id = $2
-RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at
+RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at, domain_suffixes, website_suffixes, company_key, company_prefixes
 `
 
 type LiftContactSuppressionParams struct {
@@ -353,6 +361,10 @@ func (q *Queries) LiftContactSuppression(ctx context.Context, arg LiftContactSup
 		&i.LastEventAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DomainSuffixes,
+		&i.WebsiteSuffixes,
+		&i.CompanyKey,
+		&i.CompanyPrefixes,
 	)
 	return i, err
 }
@@ -493,7 +505,7 @@ const setContactStage = `-- name: SetContactStage :one
 UPDATE contacts
 SET lifecycle_stage = $1, last_event_at = now(), updated_at = now()
 WHERE id = $2
-RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at
+RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at, domain_suffixes, website_suffixes, company_key, company_prefixes
 `
 
 type SetContactStageParams struct {
@@ -525,6 +537,10 @@ func (q *Queries) SetContactStage(ctx context.Context, arg SetContactStageParams
 		&i.LastEventAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DomainSuffixes,
+		&i.WebsiteSuffixes,
+		&i.CompanyKey,
+		&i.CompanyPrefixes,
 	)
 	return i, err
 }
@@ -537,7 +553,7 @@ SET suppressed_at      = COALESCE(suppressed_at, now()),
     last_event_at      = now(),
     updated_at         = now()
 WHERE id = $3
-RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at
+RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at, domain_suffixes, website_suffixes, company_key, company_prefixes
 `
 
 type SuppressContactParams struct {
@@ -569,6 +585,10 @@ func (q *Queries) SuppressContact(ctx context.Context, arg SuppressContactParams
 		&i.LastEventAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DomainSuffixes,
+		&i.WebsiteSuffixes,
+		&i.CompanyKey,
+		&i.CompanyPrefixes,
 	)
 	return i, err
 }
@@ -598,7 +618,7 @@ SET first_name = COALESCE($1, first_name),
     attributes = COALESCE($7, attributes),
     updated_at = now()
 WHERE id = $8
-RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at
+RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at, domain_suffixes, website_suffixes, company_key, company_prefixes
 `
 
 type UpdateContactProfileParams struct {
@@ -644,6 +664,10 @@ func (q *Queries) UpdateContactProfile(ctx context.Context, arg UpdateContactPro
 		&i.LastEventAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DomainSuffixes,
+		&i.WebsiteSuffixes,
+		&i.CompanyKey,
+		&i.CompanyPrefixes,
 	)
 	return i, err
 }
@@ -662,7 +686,7 @@ SET first_name  = COALESCE(contacts.first_name, EXCLUDED.first_name),
     website     = COALESCE(contacts.website, EXCLUDED.website),
     business_id = COALESCE(contacts.business_id, EXCLUDED.business_id),
     updated_at  = now()
-RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at
+RETURNING id, email, domain, first_name, last_name, company, title, phone, website, business_id, source, lifecycle_stage, stage_changed_at, suppressed_at, suppression_reason, attributes, last_event_at, created_at, updated_at, domain_suffixes, website_suffixes, company_key, company_prefixes
 `
 
 type UpsertContactParams struct {
@@ -716,6 +740,10 @@ func (q *Queries) UpsertContact(ctx context.Context, arg UpsertContactParams) (C
 		&i.LastEventAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DomainSuffixes,
+		&i.WebsiteSuffixes,
+		&i.CompanyKey,
+		&i.CompanyPrefixes,
 	)
 	return i, err
 }

@@ -21,9 +21,11 @@ type ImportResult struct {
 	Matched           int64
 	Imported          int
 	SkippedSuppressed int
-	SkippedExisting   int
-	SkippedInvalid    int
-	Capped            bool
+	// SkippedExcluded counts addresses a global exclusion keeps out.
+	SkippedExcluded int
+	SkippedExisting int
+	SkippedInvalid  int
+	Capped          bool
 }
 
 // LeadDetail is one lead with its assignments, sends and timeline.
@@ -76,6 +78,10 @@ func (s *Service) EstimateImport(ctx context.Context, campaignID uuid.UUID, f db
 	seen := make(map[string]struct{}, len(accepted))
 	for _, email := range accepted {
 		state := states[email]
+		if state.Excluded {
+			result.SkippedExcluded++
+			continue
+		}
 		if state.Suppressed {
 			result.SkippedSuppressed++
 			continue
@@ -91,9 +97,9 @@ func (s *Service) EstimateImport(ctx context.Context, campaignID uuid.UUID, f db
 }
 
 // ImportLeads brings the businesses a filter matches into a campaign as contacts
-// and campaign leads. A suppressed contact is never imported, an address the
-// campaign already has is skipped, and an address that fails basic acceptance is
-// counted as invalid.
+// and campaign leads. A globally excluded address never becomes a contact or a
+// lead, a suppressed contact is never imported, an address the campaign already
+// has is skipped, and an address that fails basic acceptance is counted as invalid.
 func (s *Service) ImportLeads(ctx context.Context, campaignID uuid.UUID, f db.ImportFilter) (ImportResult, error) {
 	camp, err := s.campaign(ctx, campaignID)
 	if err != nil {
@@ -111,12 +117,24 @@ func (s *Service) ImportLeads(ctx context.Context, campaignID uuid.UUID, f db.Im
 	if len(candidates) == 0 {
 		return result, nil
 	}
+	emails := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		emails = append(emails, c.Email)
+	}
+	excluded, err := s.store.ExcludedEmails(ctx, emails)
+	if err != nil {
+		return ImportResult{}, apperr.Internal(err)
+	}
 	// Businesses are loaded once per import for names and locations.
 	err = s.store.InTx(ctx, func(q *dbgen.Queries) error {
 		for _, c := range candidates {
 			email, ok := business.NormalizeEmail(c.Email)
 			if !ok || !strings.Contains(email, "@") {
 				result.SkippedInvalid++
+				continue
+			}
+			if _, skip := excluded[email]; skip {
+				result.SkippedExcluded++
 				continue
 			}
 			domain := email[strings.LastIndex(email, "@")+1:]

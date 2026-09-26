@@ -20,6 +20,7 @@ WHERE cl.id IN (
     SELECT l.id FROM campaign_leads l
     JOIN contacts ct ON ct.id = l.contact_id
     WHERE l.campaign_id = $1 AND l.status = 'pending' AND ct.suppressed_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = ct.email)
     ORDER BY l.created_at
     LIMIT $2
     FOR UPDATE OF l SKIP LOCKED)
@@ -32,8 +33,9 @@ type ClaimPendingCampaignLeadsParams struct {
 	Lim        int32
 }
 
-// The push claim. A lead is claimed only while it is pending and its contact is not
-// suppressed, so a suppressed contact is never handed to the provider.
+// The push claim. A lead is claimed only while it is pending, its contact is not
+// suppressed and its address is not globally excluded, so neither is ever handed
+// to the provider.
 func (q *Queries) ClaimPendingCampaignLeads(ctx context.Context, arg ClaimPendingCampaignLeadsParams) ([]CampaignLead, error) {
 	rows, err := q.db.Query(ctx, claimPendingCampaignLeads, arg.CampaignID, arg.Lim)
 	if err != nil {
@@ -111,6 +113,7 @@ const countPendingCampaignLeads = `-- name: CountPendingCampaignLeads :one
 SELECT count(*) FROM campaign_leads cl
 JOIN contacts c ON c.id = cl.contact_id
 WHERE cl.campaign_id = $1 AND cl.status = 'pending' AND c.suppressed_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = c.email)
 `
 
 func (q *Queries) CountPendingCampaignLeads(ctx context.Context, campaignID uuid.UUID) (int64, error) {
@@ -474,7 +477,7 @@ func (q *Queries) ListPushedCampaignLeadsForContact(ctx context.Context, contact
 
 const markCampaignLeadPushed = `-- name: MarkCampaignLeadPushed :one
 UPDATE campaign_leads
-SET status = 'active', instantly_lead_id = $1, instantly_status = 1,
+SET status = CASE WHEN status = 'excluded' THEN 'excluded' ELSE 'active' END, instantly_lead_id = $1, instantly_status = 1,
     pushed_at = COALESCE(pushed_at, now()), claimed_at = NULL, last_push_error = NULL,
     custom_vars = $2, updated_at = now()
 WHERE id = $3
@@ -487,6 +490,8 @@ type MarkCampaignLeadPushedParams struct {
 	ID              uuid.UUID
 }
 
+// A lead the exclusion sweep stopped while its push was in flight stays excluded;
+// the caller sees that and removes it from the provider again.
 func (q *Queries) MarkCampaignLeadPushed(ctx context.Context, arg MarkCampaignLeadPushedParams) (CampaignLead, error) {
 	row := q.db.QueryRow(ctx, markCampaignLeadPushed, arg.InstantlyLeadID, arg.CustomVars, arg.ID)
 	var i CampaignLead
