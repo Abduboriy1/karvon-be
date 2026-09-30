@@ -41,6 +41,11 @@ services:
       KARVON_VERIFY_REACHER_ENABLED: ${KARVON_VERIFY_REACHER_ENABLED:-false}
       KARVON_VERIFY_REACHER_URL: ${KARVON_VERIFY_REACHER_URL:-http://reacher:8080}
       KARVON_VERIFY_REACHER_SECRET: ${KARVON_VERIFY_REACHER_SECRET:-reacher-dev-secret}
+      # The Facebook scraper for the social media scrape; its container is started
+      # with the "fb-scrape" profile.
+      KARVON_FB_SCRAPE_ENABLED: ${KARVON_FB_SCRAPE_ENABLED:-false}
+      KARVON_FB_SCRAPE_URL: http://fb-scrape:8000
+      KARVON_FB_SCRAPE_API_KEY: ${KARVON_FB_SCRAPE_API_KEY:-}
     volumes:
       - ./config/verify:/app/config/verify:ro
     ports:
@@ -87,6 +92,13 @@ services:
       RCH__THROTTLE__MAX_REQUESTS_PER_MINUTE: "120"
       RCH__THROTTLE__MAX_REQUESTS_PER_DAY: "10000"
       RUST_LOG: reacher=info
+    # The image's headless Chromium (Yahoo / Hotmail B2C checks) writes a crash
+    # dump under ~/.config/chromium/Crash Reports on every crash and nothing ever
+    # uploads or deletes them. The image is amd64-only, and under emulation on
+    # Apple Silicon Chromium crashes constantly: 190 GB in two days filled the
+    # disk. A capped tmpfs bounds it; once full, further dumps are dropped.
+    tmpfs:
+      - /home/chrome/.config:size=256m,mode=1777
     ports:
       # 8081 on the host, because the API already owns 8080.
       - "8081:8080"
@@ -97,6 +109,34 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    restart: unless-stopped
+
+  # fb-scrape: reads the public Intro / Details box (email, phone, website) from a
+  # Facebook Page through a pool of Webshare proxies. Python + headless Chromium,
+  # so it is its own image; see services/fb-scrape/README.md.
+  #
+  #   docker compose --profile fb-scrape up -d --build
+  #
+  # Its settings (the Webshare key, per-proxy limits) live in
+  # services/fb-scrape/.env; copy .env.example there. Without that file it starts
+  # with no proxies and scrapes from the host's own IP.
+  fb-scrape:
+    build: ./services/fb-scrape
+    profiles: ["fb-scrape"]
+    env_file:
+      - path: ./services/fb-scrape/.env
+        required: false
+    init: true          # reaps Chromium child processes
+    shm_size: "2gb"     # Chromium needs more than Docker's 64MB default; the contexts share it
+    ports:
+      - "8000:8000"
+    healthcheck:
+      # Tighter than the image's own 30s interval so `make dev` is not held up.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     restart: unless-stopped
 
 volumes:

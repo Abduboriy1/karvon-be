@@ -109,19 +109,41 @@ WHERE jr.job_id = sqlc.arg('jid')
         AND NOT EXISTS (SELECT 1 FROM business_socials bs WHERE bs.business_id = b.id)))
 ORDER BY b.id;
 
--- name: FindFreshCrawledSibling :one
--- A sibling is another listing of the same website, not merely the same domain: a
--- city or a franchise often hosts one page per location under a single domain, and
--- each page carries its own address. The key ignores scheme, "www.", the query
--- string and trailing slashes; business.WebsiteKey computes the argument the same way.
-SELECT b.id
+-- name: ListJobSocialTargets :many
+-- The job's businesses with a profile on one network, and that profile (the first one
+-- found when the site links to several), optionally only those still without an email.
+SELECT DISTINCT ON (b.id) b.id, bs.url
+FROM job_results jr
+         JOIN businesses b ON b.id = jr.business_id
+         JOIN business_socials bs ON bs.business_id = b.id AND bs.network = sqlc.arg('network')
+WHERE jr.job_id = sqlc.arg('jid')
+  AND (NOT sqlc.arg('missing_email_only')::bool
+    OR NOT EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id))
+ORDER BY b.id, bs.found_at, bs.url;
+
+-- name: FillBusinessPhone :execrows
+-- Sets the phone number of a business that has none; a number from the Maps provider
+-- is never overwritten.
+UPDATE businesses
+SET phone = sqlc.arg('phone'), updated_at = now()
+WHERE id = sqlc.arg('id')
+  AND (phone IS NULL OR phone = '');
+
+-- name: ListFreshCrawledSiblings :many
+-- Candidates for a sibling: another listing of the same website, not merely the same
+-- domain. A city or a franchise often hosts one page per location under a single
+-- domain, and each page carries its own address. This matches on the path only
+-- (ignoring scheme, "www.", the query string and trailing slashes, the way
+-- business.WebsitePathKey computes the argument); the caller compares the query
+-- string, which often names the page ("profile.php?id=…", "detail.aspx?s=…").
+SELECT b.id, b.website
 FROM businesses b
 WHERE b.domain = sqlc.arg('domain')
   AND lower(regexp_replace(regexp_replace(b.website, '[?#].*$', ''), '^https?://(www\.)?|/+$', '', 'gi'))
-      = sqlc.arg('website_key')::text
+      = sqlc.arg('path_key')::text
   AND b.id <> sqlc.arg('exclude_id')
   AND b.last_crawled_at IS NOT NULL
   AND b.last_crawled_at > now() - make_interval(days => sqlc.arg('max_age_days')::int)
   AND EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id)
 ORDER BY b.last_crawled_at DESC
-LIMIT 1;
+LIMIT 200;

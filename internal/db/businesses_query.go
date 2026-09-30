@@ -12,8 +12,9 @@ import (
 
 // BusinessFilter is the shared filter set for listing and exporting businesses.
 type BusinessFilter struct {
-	JobID      *uuid.UUID
-	Category   *string
+	JobID *uuid.UUID
+	// Categories matches a business whose category equals any of the values.
+	Categories []string
 	State      *string
 	City       *string
 	Q          *string
@@ -139,8 +140,8 @@ func buildBusinessWhere(f BusinessFilter, a *argSet) (from string, where string)
 	if len(f.IDs) > 0 {
 		conds = append(conds, "b.id = ANY("+a.add(f.IDs)+")")
 	}
-	if f.Category != nil && *f.Category != "" {
-		conds = append(conds, "b.category = "+a.add(*f.Category))
+	if len(f.Categories) > 0 {
+		conds = append(conds, "b.category = ANY("+a.add(f.Categories)+")")
 	}
 	if f.State != nil && *f.State != "" {
 		conds = append(conds, "b.state = "+a.add(*f.State))

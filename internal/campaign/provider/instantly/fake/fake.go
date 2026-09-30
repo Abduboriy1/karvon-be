@@ -48,6 +48,11 @@ type Client struct {
 	WebhookEvents   []instantly.WebhookEvent
 	BackgroundJobs  map[string]instantly.BackgroundJob
 	SendingStatuses map[string]instantly.SendingStatus
+	// OAuthSessions are the started Google connections by session id; a test
+	// finishes one with CompleteOAuth or FailOAuth.
+	OAuthSessions map[string]instantly.OAuthStatus
+	// WarmupEnabled holds every address EnableWarmup was called for.
+	WarmupEnabled map[string]bool
 
 	// InvalidEmails are counted as invalid_email_count and never created.
 	InvalidEmails map[string]bool
@@ -73,6 +78,8 @@ func New() *Client {
 		Webhooks:        map[string]instantly.Webhook{},
 		BackgroundJobs:  map[string]instantly.BackgroundJob{},
 		SendingStatuses: map[string]instantly.SendingStatus{},
+		OAuthSessions:   map[string]instantly.OAuthStatus{},
+		WarmupEnabled:   map[string]bool{},
 		InvalidEmails:   map[string]bool{},
 		Blocklisted:     map[string]bool{},
 		Now:             time.Now,
@@ -397,6 +404,69 @@ func (c *Client) ListAccounts(_ context.Context, startingAfter string) (instantl
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].Email < accounts[j].Email })
 	items, next := paginate(accounts, func(a instantly.Account) string { return a.Email }, 0, startingAfter)
 	return instantly.AccountPage{Items: items, NextStartingAfter: next}, nil
+}
+
+// StartGoogleOAuth implements instantly.Client with a pending session.
+func (c *Client) StartGoogleOAuth(_ context.Context) (instantly.OAuthSession, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.record("StartGoogleOAuth", nil); err != nil {
+		return instantly.OAuthSession{}, err
+	}
+	id := c.nextID("oauth-")
+	c.OAuthSessions[id] = instantly.OAuthStatus{Status: instantly.OAuthPending}
+	return instantly.OAuthSession{
+		SessionID: id,
+		AuthURL:   "https://accounts.google.com/o/oauth2/v2/auth?client_id=instantly&state=api_session:" + id,
+		// The caller compares the expiry with its own clock, as it does Instantly's, so
+		// this one is stamped with the wall clock rather than c.Now.
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}, nil
+}
+
+// OAuthSessionStatus implements instantly.Client.
+func (c *Client) OAuthSessionStatus(_ context.Context, sessionID string) (instantly.OAuthStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.record("OAuthSessionStatus", sessionID); err != nil {
+		return instantly.OAuthStatus{}, err
+	}
+	status, ok := c.OAuthSessions[sessionID]
+	if !ok {
+		return instantly.OAuthStatus{}, fmt.Errorf("fake instantly: oauth session %s: %w", sessionID, provider.ErrNotFound)
+	}
+	return status, nil
+}
+
+// CompleteOAuth finishes a session the way a person signing in as email would,
+// and adds the account.
+func (c *Client) CompleteOAuth(sessionID, email string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.OAuthSessions[sessionID] = instantly.OAuthStatus{Status: instantly.OAuthSuccess, Email: email, AccountID: email}
+	c.Accounts = append(c.Accounts, instantly.Account{Email: email, Status: 1})
+}
+
+// FailOAuth ends a session with an error code.
+func (c *Client) FailOAuth(sessionID, code, description string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.OAuthSessions[sessionID] = instantly.OAuthStatus{Status: instantly.OAuthError, Error: code, ErrorDescription: description}
+}
+
+// EnableWarmup implements instantly.Client.
+func (c *Client) EnableWarmup(_ context.Context, emails []string) (instantly.BackgroundJob, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.record("EnableWarmup", emails); err != nil {
+		return instantly.BackgroundJob{}, err
+	}
+	for _, email := range emails {
+		c.WarmupEnabled[email] = true
+	}
+	job := instantly.BackgroundJob{ID: c.nextID("job-"), Status: "pending", Type: "warmup_enable"}
+	c.BackgroundJobs[job.ID] = job
+	return job, nil
 }
 
 // AccountDailyAnalytics implements instantly.Client.

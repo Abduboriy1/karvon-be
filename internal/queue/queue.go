@@ -16,6 +16,9 @@ const (
 	QueueQueries  = "scrape_queries"
 	QueueCrawl    = "scrape_crawl"
 	QueueFinalize = "scrape_finalize"
+	// Social profile pages are read through a separate service with its own proxy
+	// pool, so they get their own pool sized to it rather than the website crawl's.
+	QueueSocial = "scrape_social"
 	// Verification has its own queues so a paid-provider outage can never starve
 	// the scrape pipeline, and so the two passes are tuned independently.
 	QueueVerifySelf  = "verify_self"
@@ -27,6 +30,12 @@ const (
 	QueueCampaignEvents = "campaign_events"
 	QueueCampaignSync   = "campaign_sync"
 	QueueNewsletter     = "newsletter"
+	// Domain purchases run one at a time on their own queue: they spend money, and
+	// nothing else should ever wait behind a registrar call.
+	QueueDomains = "domains"
+	// Workspace setups wait on Google for minutes at a time (by snoozing) and create
+	// paid mailboxes; they get their own small pool.
+	QueueWorkspace = "workspace"
 )
 
 // Enqueuer is the subset of *river.Client used by application code.

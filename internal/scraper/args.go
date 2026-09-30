@@ -13,13 +13,15 @@ import (
 // River job kinds. They are persisted in the queue table, so renaming one is a
 // migration, not a refactor.
 const (
-	KindScrape    = "scrape"
-	KindQuery     = "scrape_query"
-	KindCrawl     = "scrape_crawl"
-	KindRecrawl   = "scrape_recrawl"
-	KindFinalize  = "scrape_finalize"
-	KindAbortRuns = "scrape_abort_runs"
-	KindPrune     = "prune_job_events"
+	KindScrape     = "scrape"
+	KindQuery      = "scrape_query"
+	KindCrawl      = "scrape_crawl"
+	KindRecrawl    = "scrape_recrawl"
+	KindSocial     = "scrape_social"
+	KindSocialPage = "scrape_social_page"
+	KindFinalize   = "scrape_finalize"
+	KindAbortRuns  = "scrape_abort_runs"
+	KindPrune      = "prune_job_events"
 )
 
 // ScrapeArgs starts a job: it expands the config into job_queries and fans out.
@@ -95,6 +97,49 @@ func (RecrawlArgs) Kind() string { return KindRecrawl }
 func (a RecrawlArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue:       queue.QueueDefault,
+		MaxAttempts: 3,
+		Metadata:    JobMetadata(a.JobID),
+		UniqueOpts:  river.UniqueOpts{ByArgs: true},
+	}
+}
+
+// SocialScrapeArgs starts a social media scrape: the job owns hand-picked businesses,
+// and the pipeline reads their social profiles instead of searching or crawling.
+type SocialScrapeArgs struct {
+	JobID uuid.UUID `json:"job_id" river:"unique"`
+}
+
+// Kind implements river.JobArgs.
+func (SocialScrapeArgs) Kind() string { return KindSocial }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (a SocialScrapeArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       queue.QueueDefault,
+		MaxAttempts: 3,
+		Metadata:    JobMetadata(a.JobID),
+		UniqueOpts:  river.UniqueOpts{ByArgs: true},
+	}
+}
+
+// SocialPageArgs reads one business's profile on one network.
+//
+// URL is carried along so the worker need not look the profile up again; it is not
+// part of the uniqueness key, which is the job, the business and the network.
+type SocialPageArgs struct {
+	JobID      uuid.UUID `json:"job_id" river:"unique"`
+	BusinessID uuid.UUID `json:"business_id" river:"unique"`
+	Network    string    `json:"network" river:"unique"`
+	URL        string    `json:"url"`
+}
+
+// Kind implements river.JobArgs.
+func (SocialPageArgs) Kind() string { return KindSocialPage }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (a SocialPageArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       queue.QueueSocial,
 		MaxAttempts: 3,
 		Metadata:    JobMetadata(a.JobID),
 		UniqueOpts:  river.UniqueOpts{ByArgs: true},

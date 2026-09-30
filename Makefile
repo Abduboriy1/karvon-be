@@ -10,6 +10,11 @@ BINDIR ?= bin
 REACHER_ENABLED := $(shell sed -n 's/^KARVON_VERIFY_REACHER_ENABLED=//p' .env 2>/dev/null | tail -1)
 REACHER_ON := $(if $(filter true,$(REACHER_ENABLED)),true,false)
 
+# fb-scrape (services/fb-scrape) is opt-in the same way: a heavy image, and without
+# Webshare proxies it scrapes Facebook from this machine's own IP.
+FB_SCRAPE_ENABLED := $(shell sed -n 's/^KARVON_FB_SCRAPE_ENABLED=//p' .env 2>/dev/null | tail -1)
+FB_SCRAPE_ON := $(if $(filter true,$(FB_SCRAPE_ENABLED)),true,false)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -17,7 +22,7 @@ help: ## Show the available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: dev
-dev: compose-db compose-reacher migrate verify-settings-sync ## Start Postgres and every enabled connector, migrate, sync provider flags and run the API
+dev: compose-db compose-reacher compose-fb-scrape migrate verify-settings-sync ## Start Postgres and every enabled connector, migrate, sync provider flags and run the API
 	$(GO) run ./cmd/api
 
 .PHONY: run
@@ -109,6 +114,22 @@ endif
 .PHONY: compose-reacher-down
 compose-reacher-down: ## Stop the Reacher container, leaving the rest of the stack up
 	docker compose --profile reacher stop reacher
+
+.PHONY: compose-fb-scrape
+compose-fb-scrape: ## Build and start the fb-scrape container when .env enables it
+ifeq ($(FB_SCRAPE_ON),true)
+	@# --build picks up edits under services/fb-scrape; unchanged, it is a cache hit.
+	@# The first build pulls Chromium (~1.3 GB) and takes a few minutes. Not fatal:
+	@# the API does not need the scraper to start.
+	docker compose --profile fb-scrape up -d --build --wait fb-scrape \
+		|| echo "WARNING: fb-scrape did not become healthy; the API will start without it."
+else
+	@echo "fb-scrape off (KARVON_FB_SCRAPE_ENABLED); its container was not started."
+endif
+
+.PHONY: compose-fb-scrape-down
+compose-fb-scrape-down: ## Stop the fb-scrape container, leaving the rest of the stack up
+	docker compose --profile fb-scrape stop fb-scrape
 
 .PHONY: verify-settings-sync
 verify-settings-sync: ## Point the stored Reacher flag at .env (the row, not the env, decides at runtime)

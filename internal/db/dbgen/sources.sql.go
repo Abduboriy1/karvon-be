@@ -34,6 +34,29 @@ func (q *Queries) GetSource(ctx context.Context, id uuid.UUID) (Source, error) {
 	return i, err
 }
 
+const getSourceByKind = `-- name: GetSourceByKind :one
+SELECT id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role FROM sources WHERE kind = $1
+`
+
+func (q *Queries) GetSourceByKind(ctx context.Context, kind string) (Source, error) {
+	row := q.db.QueryRow(ctx, getSourceByKind, kind)
+	var i Source
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Name,
+		&i.ApiKeyEnc,
+		&i.CostPer1kCents,
+		&i.Enabled,
+		&i.LastTestedAt,
+		&i.LastTestOk,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Role,
+	)
+	return i, err
+}
+
 const listSources = `-- name: ListSources :many
 SELECT id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role FROM sources ORDER BY name
 `

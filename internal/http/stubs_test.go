@@ -45,6 +45,7 @@ type stubJobs struct {
 
 	recrawlTargets []string
 	recrawlFilter  *db.BusinessFilter
+	socialScrape   *scraper.SocialScrapeInput
 	recrawled      []uuid.UUID
 
 	lastCreate  scraper.CreateInput
@@ -84,6 +85,11 @@ func (s *stubJobs) Recrawl(_ context.Context, id uuid.UUID, targets []string) (d
 func (s *stubJobs) RecrawlBusinesses(_ context.Context, filter db.BusinessFilter, targets []string) (db.JobRow, error) {
 	s.recrawlFilter = &filter
 	s.recrawlTargets = targets
+	return s.job, s.err
+}
+
+func (s *stubJobs) SocialScrapeBusinesses(_ context.Context, in scraper.SocialScrapeInput) (db.JobRow, error) {
+	s.socialScrape = &in
 	return s.job, s.err
 }
 

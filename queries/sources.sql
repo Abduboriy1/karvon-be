@@ -22,3 +22,6 @@ SET last_tested_at = now(),
     last_test_ok   = sqlc.arg('ok'),
     updated_at     = now()
 WHERE id = sqlc.arg('id');
+
+-- name: GetSourceByKind :one
+SELECT * FROM sources WHERE kind = $1;

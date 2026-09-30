@@ -29,8 +29,10 @@ import (
 	"github.com/bory/karvon-be/internal/exclusion"
 	httpapi "github.com/bory/karvon-be/internal/http"
 	"github.com/bory/karvon-be/internal/queue"
+	"github.com/bory/karvon-be/internal/registrar"
 	"github.com/bory/karvon-be/internal/scraper"
 	"github.com/bory/karvon-be/internal/scraper/crawler"
+	"github.com/bory/karvon-be/internal/scraper/fbscrape"
 	"github.com/bory/karvon-be/internal/scraper/jobs"
 	"github.com/bory/karvon-be/internal/scraper/provider/apify"
 	"github.com/bory/karvon-be/internal/source"
@@ -40,6 +42,7 @@ import (
 	"github.com/bory/karvon-be/internal/verify/provider"
 	"github.com/bory/karvon-be/internal/verify/provider/mailchecker"
 	"github.com/bory/karvon-be/internal/verify/provider/reacher"
+	"github.com/bory/karvon-be/internal/workspace"
 )
 
 // App is a fully wired service instance.
@@ -115,6 +118,20 @@ func (a *App) build(ctx context.Context) error {
 		providers = a.opts.providerFactory
 	}
 
+	// The social media scrape reads Facebook Pages through the fb-scrape container.
+	// Left nil when it is off, so the workers and the service both see it missing.
+	var facebook jobs.FacebookScraper
+	var socialNetworks []string
+	if a.cfg.FBScrapeEnabled {
+		facebook = fbscrape.New(fbscrape.Config{
+			BaseURL: a.cfg.FBScrapeURL,
+			APIKey:  a.cfg.FBScrapeAPIKey,
+			Timeout: a.cfg.FBScrapeTimeout,
+		})
+		socialNetworks = append(socialNetworks, scraper.SocialNetworkFacebook)
+		a.log.Info("Facebook scraper enabled", "url", a.cfg.FBScrapeURL)
+	}
+
 	workerDeps := jobs.NewDeps(jobs.Deps{
 		Store:     a.store,
 		Publisher: publisher,
@@ -129,6 +146,7 @@ func (a *App) build(ctx context.Context) error {
 			ContactPaths:    a.cfg.ContactPaths(crawler.DefaultContactPaths),
 			Transport:       a.opts.crawlTransport,
 		}),
+		Facebook:  facebook,
 		Providers: providers,
 		Log:       a.log,
 		Config: jobs.Config{
@@ -139,6 +157,7 @@ func (a *App) build(ctx context.Context) error {
 			MaxActiveProviderRuns: a.cfg.ProviderMaxActiveRuns,
 			MaxRunDuration:        a.cfg.ProviderMaxRunTime,
 			RunPageSize:           a.cfg.ProviderPageSize,
+			SocialPageTimeout:     a.cfg.FBScrapeTimeout,
 		},
 	})
 
@@ -149,8 +168,24 @@ func (a *App) build(ctx context.Context) error {
 
 	campaignDeps, campaignService := a.buildCampaign(cipher)
 	exclusionService := exclusion.NewService(a.store)
+	domainService := registrar.NewService(a.store, cipher, registrar.Config{
+		BaseURL:      a.cfg.CloudflareBaseURL,
+		Timeout:      a.cfg.CloudflareTimeout,
+		PollInterval: a.cfg.DomainPollInterval,
+		MaxWait:      a.cfg.DomainMaxWait,
+	}, a.log)
+	mailboxService := workspace.NewService(a.store, cipher, domainService, workspace.Config{
+		TokenURL:              a.cfg.GoogleTokenURL,
+		DirectoryURL:          a.cfg.GoogleDirectoryURL,
+		SiteVerificationURL:   a.cfg.GoogleSiteVerificationURL,
+		Timeout:               a.cfg.GoogleTimeout,
+		PollInterval:          a.cfg.WorkspacePollInterval,
+		VerifyMaxWait:         a.cfg.WorkspaceVerifyMaxWait,
+		InstantlyPollInterval: a.cfg.WorkspaceInstantlyPollInterval,
+	}, a.log)
+	mailboxService.SetInstantly(campaignService)
 
-	riverClient, err := a.newRiverClient(workerDeps, verifyDeps, campaignDeps)
+	riverClient, err := a.newRiverClient(workerDeps, verifyDeps, campaignDeps, domainService, mailboxService)
 	if err != nil {
 		return err
 	}
@@ -162,18 +197,26 @@ func (a *App) build(ctx context.Context) error {
 	campaignDeps.Queue = riverClient
 	campaignService.SetQueue(riverClient)
 	exclusionService.SetQueue(riverClient)
+	domainService.SetQueue(riverClient)
+	mailboxService.SetQueue(riverClient)
 
 	jobService := scraper.NewService(a.store, riverClient, publisher, a.log,
-		scraper.ServiceConfig{MaxQueriesPerJob: a.cfg.MaxQueriesPerJob})
+		scraper.ServiceConfig{MaxQueriesPerJob: a.cfg.MaxQueriesPerJob, SocialNetworks: socialNetworks})
+
+	sourceService := source.NewService(a.store, cipher, providers, verifiers, a.log)
+	sourceService.SetRegistrar(domainService)
+	sourceService.SetMailboxes(mailboxService)
 
 	server := httpapi.NewServer(httpapi.Deps{
 		Jobs:         jobService,
 		Businesses:   business.NewService(a.store),
-		Sources:      source.NewService(a.store, cipher, providers, verifiers, a.log),
+		Sources:      sourceService,
 		Categories:   category.NewService(a.store),
 		Exclusions:   exclusionService,
 		Verification: verifyService,
 		Campaigns:    campaignService,
+		Domains:      domainService,
+		Mailboxes:    mailboxService,
 		Stats:        stats.NewService(a.store),
 		Store:        a.store,
 		Listener:     a.listener,
@@ -335,7 +378,7 @@ func (a *App) buildVerification(cipher *crypto.Cipher) (*verifyjobs.Deps, *verif
 }
 
 func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
-	campaignDeps *campaignjobs.Deps,
+	campaignDeps *campaignjobs.Deps, domainService *registrar.Service, mailboxService *workspace.Service,
 ) (*river.Client[pgx.Tx], error) {
 	cfg := &river.Config{Logger: a.log}
 
@@ -346,6 +389,8 @@ func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
 			river.AddWorkerSafely(workers, jobs.NewQueryWorker(deps)),
 			river.AddWorkerSafely(workers, jobs.NewCrawlWorker(deps)),
 			river.AddWorkerSafely(workers, jobs.NewRecrawlWorker(deps)),
+			river.AddWorkerSafely(workers, jobs.NewSocialScrapeWorker(deps)),
+			river.AddWorkerSafely(workers, jobs.NewSocialPageWorker(deps)),
 			river.AddWorkerSafely(workers, jobs.NewFinalizeWorker(deps)),
 			river.AddWorkerSafely(workers, jobs.NewAbortRunsWorker(deps)),
 			river.AddWorkerSafely(workers, jobs.NewPruneWorker(deps)),
@@ -367,6 +412,9 @@ func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
 			river.AddWorkerSafely(workers, campaignjobs.NewNewsletterPushWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewNewsletterSyncMembersWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewNewsletterSyncAudiencesWorker(campaignDeps)),
+			river.AddWorkerSafely(workers, registrar.NewPurchaseWorker(domainService)),
+			river.AddWorkerSafely(workers, workspace.NewSetupWorker(mailboxService)),
+			river.AddWorkerSafely(workers, workspace.NewInstantlyConnectWorker(mailboxService)),
 		); err != nil {
 			return nil, fmt.Errorf("app: register workers: %w", err)
 		}
@@ -376,6 +424,7 @@ func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
 			queue.QueueDefault:  {MaxWorkers: 4},
 			queue.QueueQueries:  {MaxWorkers: a.cfg.QueryConcurrency},
 			queue.QueueCrawl:    {MaxWorkers: a.cfg.CrawlConcurrency},
+			queue.QueueSocial:   {MaxWorkers: a.cfg.FBScrapeConcurrency},
 			queue.QueueFinalize: {MaxWorkers: 2},
 			// The paid pass gets its own pool: a vendor outage parks its jobs
 			// without starving the scrape pipeline or the free local pass.
@@ -388,6 +437,9 @@ func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
 			queue.QueueCampaignEvents: {MaxWorkers: a.cfg.CampaignEventConcurrency},
 			queue.QueueCampaignSync:   {MaxWorkers: 2},
 			queue.QueueNewsletter:     {MaxWorkers: 2},
+			// One worker: purchases spend money and run strictly one at a time.
+			queue.QueueDomains:   {MaxWorkers: 1},
+			queue.QueueWorkspace: {MaxWorkers: 2},
 		}
 		periodic := func(every time.Duration, args river.JobArgs, runOnStart bool) *river.PeriodicJob {
 			return river.NewPeriodicJob(

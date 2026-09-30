@@ -72,6 +72,15 @@ func toAPIJobConfig(cfg scraper.Config) gen.JobConfig {
 		}
 		out.RecrawlTargets = &targets
 	}
+	if cfg.IsSocialScrape() {
+		networks := make([]gen.SocialScrapeNetwork, 0, len(cfg.SocialNetworks))
+		for _, network := range cfg.SocialNetworks {
+			networks = append(networks, gen.SocialScrapeNetwork(network))
+		}
+		missingEmailOnly := cfg.SocialMissingEmailOnly
+		out.SocialNetworks = &networks
+		out.SocialMissingEmailOnly = &missingEmailOnly
+	}
 	return out
 }
 

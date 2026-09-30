@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -209,6 +210,67 @@ func TestTwoJobsFindingTheSamePlaceShareOneBusiness(t *testing.T) {
 	// The second job reuses the first crawl instead of fetching the site again.
 	if second.Stats.EmailsFound == 0 {
 		t.Error("the second job should still report the address it found")
+	}
+}
+
+func TestCrawlReuseTellsFacebookProfilesApart(t *testing.T) {
+	h := newHarness(t, defaultPages())
+	alpha := listingFor("place-alpha-gym", "Alpha Gym", "Austin", "www.facebook.com/profile.php?id=111")
+	alpha.Emails = []string{"owner@alphagym.com"}
+	rosie := listingFor("place-rosie-cafe", "Rosie's Cafe", "Austin", "www.facebook.com/profile.php?id=222")
+	// Another listing of Alpha Gym's own page, reached through a tracking link.
+	alphaAgain := listingFor("place-alpha-gym-2", "Alpha Gym Annex", "Austin",
+		"www.facebook.com/profile.php?id=111&mibextid=wwXIfr")
+	h.provider.ByQuery = map[string][]provider.Listing{
+		"gyms in Austin, TX":  {alpha},
+		"cafes in Austin, TX": {rosie, alphaAgain},
+	}
+	h.configureSource()
+
+	first := h.waitForJob(h.createJob("Gyms", []string{"gyms"}, []string{"Austin"}, true).ID)
+	if first.Status != "done" {
+		t.Fatalf("first job finished as %q (%s)", first.Status, first.Error)
+	}
+	// Alpha Gym's address came from the provider, so only a social re-crawl visits it,
+	// which is what makes it a freshly crawled sibling.
+	rec := h.mustRequest(http.MethodGet, "/api/v1/businesses?job_id="+first.ID, "", http.StatusOK)
+	gyms := decodeBody[businessListPayload](t, rec)
+	if len(gyms.Data) != 1 {
+		t.Fatalf("the first job lists %d businesses, want 1", len(gyms.Data))
+	}
+	rec = h.mustRequest(http.MethodPost, "/api/v1/businesses/recrawl",
+		fmt.Sprintf(`{"ids":[%q],"targets":["socials"]}`, gyms.Data[0].ID), http.StatusCreated)
+	if job := h.waitForJob(decodeBody[jobPayload](t, rec).ID); job.Status != "done" {
+		t.Fatalf("the social re-crawl finished as %q (%s)", job.Status, job.Error)
+	}
+
+	second := h.waitForJob(h.createJob("Cafes", []string{"cafes"}, []string{"Austin"}, true).ID)
+	if second.Status != "done" {
+		t.Fatalf("second job finished as %q (%s)", second.Status, second.Error)
+	}
+
+	rec = h.mustRequest(http.MethodGet, "/api/v1/businesses?job_id="+second.ID+"&per_page=50", "", http.StatusOK)
+	list := decodeBody[struct {
+		Data []struct {
+			Name         string `json:"name"`
+			PrimaryEmail string `json:"primary_email"`
+		} `json:"data"`
+	}](t, rec)
+	if len(list.Data) != 2 {
+		t.Fatalf("the second job lists %d businesses, want 2", len(list.Data))
+	}
+	for _, b := range list.Data {
+		switch b.Name {
+		case "Rosie's Cafe":
+			// profile.php?id=222 is a different page from profile.php?id=111.
+			if b.PrimaryEmail != "" {
+				t.Errorf("Rosie's Cafe was given %q from another Facebook page", b.PrimaryEmail)
+			}
+		case "Alpha Gym Annex":
+			if b.PrimaryEmail != "owner@alphagym.com" {
+				t.Errorf("Alpha Gym Annex primary_email = %q, want the address reused from the same page", b.PrimaryEmail)
+			}
+		}
 	}
 }
 

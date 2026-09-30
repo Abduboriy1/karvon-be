@@ -274,6 +274,37 @@ func (c *HTTPClient) listAccounts(ctx context.Context, limit int, startingAfter 
 	return page, nil
 }
 
+// StartGoogleOAuth implements Client. A repeat after a lost answer only opens a
+// second session, which expires unused, so it is safe to retry.
+func (c *HTTPClient) StartGoogleOAuth(ctx context.Context) (OAuthSession, error) {
+	var out OAuthSession
+	if err := c.do(ctx, http.MethodPost, "/oauth/google/init", nil, map[string]any{}, &out); err != nil {
+		return OAuthSession{}, err
+	}
+	if out.SessionID == "" || out.AuthURL == "" {
+		return OAuthSession{}, errors.New("instantly: the OAuth session came back without an id or URL")
+	}
+	return out, nil
+}
+
+// OAuthSessionStatus implements Client.
+func (c *HTTPClient) OAuthSessionStatus(ctx context.Context, sessionID string) (OAuthStatus, error) {
+	var out OAuthStatus
+	if err := c.do(ctx, http.MethodGet, "/oauth/session/status/"+url.PathEscape(sessionID), nil, nil, &out); err != nil {
+		return OAuthStatus{}, err
+	}
+	return out, nil
+}
+
+// EnableWarmup implements Client.
+func (c *HTTPClient) EnableWarmup(ctx context.Context, emails []string) (BackgroundJob, error) {
+	var out BackgroundJob
+	if err := c.do(ctx, http.MethodPost, "/accounts/warmup/enable", nil, map[string]any{"emails": emails}, &out); err != nil {
+		return BackgroundJob{}, err
+	}
+	return out, nil
+}
+
 // AccountDailyAnalytics implements Client.
 func (c *HTTPClient) AccountDailyAnalytics(ctx context.Context, from, to time.Time, emails []string) ([]AccountDaily, error) {
 	query := url.Values{

@@ -13,3 +13,4 @@ karvon-migrate
 *.out
 coverage.*
 .DS_Store
+__pycache__/

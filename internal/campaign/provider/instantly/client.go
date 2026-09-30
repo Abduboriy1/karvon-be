@@ -421,6 +421,33 @@ type Workspace struct {
 	AccountsCount int
 }
 
+// OAuth session states, as GET /oauth/session/status reports them.
+const (
+	OAuthPending = "pending"
+	OAuthSuccess = "success"
+	OAuthError   = "error"
+	OAuthExpired = "expired"
+)
+
+// OAuthSession is a started Google sign-in that connects a mailbox to Instantly.
+// A person opens AuthURL and signs in as the mailbox; the session lives ten minutes.
+type OAuthSession struct {
+	SessionID string    `json:"session_id"`
+	AuthURL   string    `json:"auth_url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// OAuthStatus is how a session is going. Email and AccountID are set on success,
+// Error and ErrorDescription on error ("account_exists", ...).
+type OAuthStatus struct {
+	Status           string `json:"status"`
+	Email            string `json:"email"`
+	Name             string `json:"name"`
+	AccountID        string `json:"account_id"`
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+}
+
 // Client is everything the module asks Instantly for.
 type Client interface {
 	Ping(ctx context.Context) (Workspace, error)
@@ -440,6 +467,13 @@ type Client interface {
 
 	ListAccounts(ctx context.Context, startingAfter string) (AccountPage, error)
 	AccountDailyAnalytics(ctx context.Context, from, to time.Time, emails []string) ([]AccountDaily, error)
+	// StartGoogleOAuth begins connecting a Google Workspace mailbox (accounts:create).
+	StartGoogleOAuth(ctx context.Context) (OAuthSession, error)
+	// OAuthSessionStatus reports a started connection (accounts:read).
+	OAuthSessionStatus(ctx context.Context, sessionID string) (OAuthStatus, error)
+	// EnableWarmup starts warmup for up to 100 accounts, as a background job
+	// (accounts:update).
+	EnableWarmup(ctx context.Context, emails []string) (BackgroundJob, error)
 
 	CampaignAnalytics(ctx context.Context, ids []string) ([]CampaignAnalytics, error)
 	CampaignDailyAnalytics(ctx context.Context, id string, from, to time.Time) ([]DailyAnalytics, error)

@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"encoding/csv"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -86,6 +87,8 @@ func TestListBusinessesForwardsEveryFilter(t *testing.T) {
 	target := "/api/v1/businesses?" + strings.Join([]string{
 		"job_id=" + testJobID.String(),
 		"category=Gym",
+		"category=Yoga%20studio",
+		"category=Gym",
 		"state=TX",
 		"city=Austin",
 		"has_email=true",
@@ -103,8 +106,9 @@ func TestListBusinessesForwardsEveryFilter(t *testing.T) {
 	if filter.JobID == nil || *filter.JobID != testJobID {
 		t.Errorf("job_id = %v", filter.JobID)
 	}
-	if filter.Category == nil || *filter.Category != "Gym" {
-		t.Errorf("category = %v", filter.Category)
+	// Repeats collapse, so the SQL never sees the same value twice.
+	if len(filter.Categories) != 2 || filter.Categories[0] != "Gym" || filter.Categories[1] != "Yoga studio" {
+		t.Errorf("categories = %v", filter.Categories)
 	}
 	if filter.State == nil || *filter.State != "TX" {
 		t.Errorf("state = %v", filter.State)
@@ -283,6 +287,33 @@ func TestExportBusinessesRejectsAnUnknownEmailSource(t *testing.T) {
 	handler, _ := newTestServer(t)
 
 	rec := do(t, handler, http.MethodPost, "/api/v1/businesses/export", `{"email_source":"telepathy"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", rec.Code)
+	}
+}
+
+func TestExportBusinessesTakesSeveralCategories(t *testing.T) {
+	handler, deps := newTestServer(t)
+
+	rec := do(t, handler, http.MethodPost, "/api/v1/businesses/export",
+		`{"category":["Gym","","Yoga studio"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	got := deps.businesses.lastFilter.Categories
+	if len(got) != 2 || got[0] != "Gym" || got[1] != "Yoga studio" {
+		t.Errorf("categories = %v", got)
+	}
+}
+
+func TestListBusinessesRejectsTooManyCategories(t *testing.T) {
+	handler, _ := newTestServer(t)
+
+	params := make([]string, 0, 51)
+	for i := range 51 {
+		params = append(params, fmt.Sprintf("category=c%d", i))
+	}
+	rec := do(t, handler, http.MethodGet, "/api/v1/businesses?"+strings.Join(params, "&"), "")
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", rec.Code)
 	}

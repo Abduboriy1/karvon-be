@@ -32,6 +32,28 @@ func (q *Queries) BulkSetSuppressed(ctx context.Context, arg BulkSetSuppressedPa
 	return result.RowsAffected(), nil
 }
 
+const fillBusinessPhone = `-- name: FillBusinessPhone :execrows
+UPDATE businesses
+SET phone = $1, updated_at = now()
+WHERE id = $2
+  AND (phone IS NULL OR phone = '')
+`
+
+type FillBusinessPhoneParams struct {
+	Phone *string
+	ID    uuid.UUID
+}
+
+// Sets the phone number of a business that has none; a number from the Maps provider
+// is never overwritten.
+func (q *Queries) FillBusinessPhone(ctx context.Context, arg FillBusinessPhoneParams) (int64, error) {
+	result, err := q.db.Exec(ctx, fillBusinessPhone, arg.Phone, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findBusinessByDomain = `-- name: FindBusinessByDomain :one
 SELECT id, place_id, name, category, address, city, state, zip, phone, website, domain, rating, reviews, lat, lng, raw, first_job_id, suppressed, notes, last_crawled_at, created_at, updated_at, name_key, name_prefixes, domain_suffixes FROM businesses
 WHERE domain = $1 AND domain IS NOT NULL
@@ -115,43 +137,6 @@ func (q *Queries) FindBusinessByPhoneZip(ctx context.Context, arg FindBusinessBy
 		&i.DomainSuffixes,
 	)
 	return i, err
-}
-
-const findFreshCrawledSibling = `-- name: FindFreshCrawledSibling :one
-SELECT b.id
-FROM businesses b
-WHERE b.domain = $1
-  AND lower(regexp_replace(regexp_replace(b.website, '[?#].*$', ''), '^https?://(www\.)?|/+$', '', 'gi'))
-      = $2::text
-  AND b.id <> $3
-  AND b.last_crawled_at IS NOT NULL
-  AND b.last_crawled_at > now() - make_interval(days => $4::int)
-  AND EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id)
-ORDER BY b.last_crawled_at DESC
-LIMIT 1
-`
-
-type FindFreshCrawledSiblingParams struct {
-	Domain     *string
-	WebsiteKey string
-	ExcludeID  uuid.UUID
-	MaxAgeDays int32
-}
-
-// A sibling is another listing of the same website, not merely the same domain: a
-// city or a franchise often hosts one page per location under a single domain, and
-// each page carries its own address. The key ignores scheme, "www.", the query
-// string and trailing slashes; business.WebsiteKey computes the argument the same way.
-func (q *Queries) FindFreshCrawledSibling(ctx context.Context, arg FindFreshCrawledSiblingParams) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, findFreshCrawledSibling,
-		arg.Domain,
-		arg.WebsiteKey,
-		arg.ExcludeID,
-		arg.MaxAgeDays,
-	)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
 }
 
 const getBusiness = `-- name: GetBusiness :one
@@ -319,6 +304,63 @@ func (q *Queries) InsertBusiness(ctx context.Context, arg InsertBusinessParams) 
 	return i, err
 }
 
+const listFreshCrawledSiblings = `-- name: ListFreshCrawledSiblings :many
+SELECT b.id, b.website
+FROM businesses b
+WHERE b.domain = $1
+  AND lower(regexp_replace(regexp_replace(b.website, '[?#].*$', ''), '^https?://(www\.)?|/+$', '', 'gi'))
+      = $2::text
+  AND b.id <> $3
+  AND b.last_crawled_at IS NOT NULL
+  AND b.last_crawled_at > now() - make_interval(days => $4::int)
+  AND EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id)
+ORDER BY b.last_crawled_at DESC
+LIMIT 200
+`
+
+type ListFreshCrawledSiblingsParams struct {
+	Domain     *string
+	PathKey    string
+	ExcludeID  uuid.UUID
+	MaxAgeDays int32
+}
+
+type ListFreshCrawledSiblingsRow struct {
+	ID      uuid.UUID
+	Website *string
+}
+
+// Candidates for a sibling: another listing of the same website, not merely the same
+// domain. A city or a franchise often hosts one page per location under a single
+// domain, and each page carries its own address. This matches on the path only
+// (ignoring scheme, "www.", the query string and trailing slashes, the way
+// business.WebsitePathKey computes the argument); the caller compares the query
+// string, which often names the page ("profile.php?id=…", "detail.aspx?s=…").
+func (q *Queries) ListFreshCrawledSiblings(ctx context.Context, arg ListFreshCrawledSiblingsParams) ([]ListFreshCrawledSiblingsRow, error) {
+	rows, err := q.db.Query(ctx, listFreshCrawledSiblings,
+		arg.Domain,
+		arg.PathKey,
+		arg.ExcludeID,
+		arg.MaxAgeDays,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListFreshCrawledSiblingsRow{}
+	for rows.Next() {
+		var i ListFreshCrawledSiblingsRow
+		if err := rows.Scan(&i.ID, &i.Website); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listJobCrawlTargets = `-- name: ListJobCrawlTargets :many
 SELECT b.id, b.website, b.domain
 FROM job_results jr
@@ -356,6 +398,50 @@ func (q *Queries) ListJobCrawlTargets(ctx context.Context, arg ListJobCrawlTarge
 	for rows.Next() {
 		var i ListJobCrawlTargetsRow
 		if err := rows.Scan(&i.ID, &i.Website, &i.Domain); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listJobSocialTargets = `-- name: ListJobSocialTargets :many
+SELECT DISTINCT ON (b.id) b.id, bs.url
+FROM job_results jr
+         JOIN businesses b ON b.id = jr.business_id
+         JOIN business_socials bs ON bs.business_id = b.id AND bs.network = $1
+WHERE jr.job_id = $2
+  AND (NOT $3::bool
+    OR NOT EXISTS (SELECT 1 FROM business_emails be WHERE be.business_id = b.id))
+ORDER BY b.id, bs.found_at, bs.url
+`
+
+type ListJobSocialTargetsParams struct {
+	Network          string
+	Jid              uuid.UUID
+	MissingEmailOnly bool
+}
+
+type ListJobSocialTargetsRow struct {
+	ID  uuid.UUID
+	Url string
+}
+
+// The job's businesses with a profile on one network, and that profile (the first one
+// found when the site links to several), optionally only those still without an email.
+func (q *Queries) ListJobSocialTargets(ctx context.Context, arg ListJobSocialTargetsParams) ([]ListJobSocialTargetsRow, error) {
+	rows, err := q.db.Query(ctx, listJobSocialTargets, arg.Network, arg.Jid, arg.MissingEmailOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListJobSocialTargetsRow{}
+	for rows.Next() {
+		var i ListJobSocialTargetsRow
+		if err := rows.Scan(&i.ID, &i.Url); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

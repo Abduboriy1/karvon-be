@@ -18,10 +18,12 @@ import (
 	"github.com/bory/karvon-be/internal/crypto"
 	"github.com/bory/karvon-be/internal/db"
 	"github.com/bory/karvon-be/internal/db/dbgen"
+	"github.com/bory/karvon-be/internal/registrar"
 	"github.com/bory/karvon-be/internal/scraper"
 	"github.com/bory/karvon-be/internal/scraper/provider"
 	"github.com/bory/karvon-be/internal/verify"
 	"github.com/bory/karvon-be/internal/verify/verifier"
+	"github.com/bory/karvon-be/internal/workspace"
 )
 
 // MaxKeyLength bounds what a client may send as an API key.
@@ -30,12 +32,26 @@ const MaxKeyLength = 500
 // probeQuery is the cheapest call that still proves a key works.
 var probeQuery = provider.SearchQuery{Term: "coffee", City: "New York", State: "NY", Max: 1}
 
+// RegistrarTester proves the stored Cloudflare token, which needs the account ID
+// kept alongside it; the domains module owns that test.
+type RegistrarTester interface {
+	TestConnection(ctx context.Context) (registrar.TestResult, error)
+}
+
+// MailboxTester proves the stored Google service-account key, which needs the admin
+// email kept alongside it; the mailboxes module owns that test.
+type MailboxTester interface {
+	TestConnection(ctx context.Context) (workspace.TestResult, error)
+}
+
 // Service implements the /sources endpoints.
 type Service struct {
 	store     *db.Store
 	cipher    *crypto.Cipher
 	providers scraper.ProviderFactory
 	verifiers verify.VerifierFactory
+	registrar RegistrarTester
+	mailboxes MailboxTester
 	log       *slog.Logger
 }
 
@@ -46,6 +62,12 @@ func NewService(store *db.Store, cipher *crypto.Cipher, providers scraper.Provid
 ) *Service {
 	return &Service{store: store, cipher: cipher, providers: providers, verifiers: verifiers, log: log}
 }
+
+// SetRegistrar wires in the domains module, which tests the registrar source.
+func (s *Service) SetRegistrar(tester RegistrarTester) { s.registrar = tester }
+
+// SetMailboxes wires in the mailboxes module, which tests the Google Workspace source.
+func (s *Service) SetMailboxes(tester MailboxTester) { s.mailboxes = tester }
 
 // List returns every configured provider.
 func (s *Service) List(ctx context.Context) ([]dbgen.Source, error) {
@@ -170,6 +192,12 @@ func (s *Service) Test(ctx context.Context, id uuid.UUID) (TestResult, error) {
 	if row.Role == verify.RoleVerifier {
 		return s.testVerifier(ctx, row)
 	}
+	if row.Role == registrar.RoleRegistrar {
+		return s.testRegistrar(ctx, row)
+	}
+	if row.Role == workspace.RoleMailboxes {
+		return s.testMailboxes(ctx, row)
+	}
 
 	// A disabled source can still be tested: that is how a key is verified before
 	// enabling it. Build the client directly rather than through the enabled check.
@@ -224,6 +252,32 @@ func (s *Service) testVerifier(ctx context.Context, row dbgen.Source) (TestResul
 	s.recordTest(ctx, row.ID, true)
 	credits := balance.Credits
 	return TestResult{OK: true, Kind: row.Kind, Credits: &credits, TestedAt: time.Now().UTC()}, nil
+}
+
+// testRegistrar proves the Cloudflare token through the domains module, which also
+// records the result on the row.
+func (s *Service) testRegistrar(ctx context.Context, row dbgen.Source) (TestResult, error) {
+	if s.registrar == nil {
+		return TestResult{}, apperr.Internal(errors.New("source: no registrar is configured"))
+	}
+	result, err := s.registrar.TestConnection(ctx)
+	if err != nil {
+		return TestResult{}, err
+	}
+	return TestResult{OK: result.OK, Kind: row.Kind, TestedAt: result.TestedAt}, nil
+}
+
+// testMailboxes proves the service-account key through the mailboxes module, which
+// also records the result on the row.
+func (s *Service) testMailboxes(ctx context.Context, row dbgen.Source) (TestResult, error) {
+	if s.mailboxes == nil {
+		return TestResult{}, apperr.Internal(errors.New("source: no mailboxes module is configured"))
+	}
+	result, err := s.mailboxes.TestConnection(ctx)
+	if err != nil {
+		return TestResult{}, err
+	}
+	return TestResult{OK: result.OK, Kind: row.Kind, TestedAt: result.TestedAt}, nil
 }
 
 // enabledCopy lets a disabled source be tested without enabling it first.

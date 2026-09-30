@@ -19,6 +19,8 @@ const (
 	EmailSourceMailto   = "mailto"
 	EmailSourceRegex    = "regex"
 	EmailSourceProvider = "provider"
+	// EmailSourceFacebook is an address read from the business's Facebook Page.
+	EmailSourceFacebook = "facebook"
 )
 
 // Ingestor turns provider listings and crawl results into deduplicated rows.

@@ -366,3 +366,37 @@ func TestConfigRoundTripsRecrawlOf(t *testing.T) {
 		t.Fatalf("a plain config must omit recrawl_of: %s", plain)
 	}
 }
+
+func TestNormalizeSocialNetworks(t *testing.T) {
+	enabled := map[string]bool{SocialNetworkFacebook: true}
+
+	got, err := NormalizeSocialNetworks([]string{" Facebook ", "facebook"}, enabled)
+	if err != nil || len(got) != 1 || got[0] != SocialNetworkFacebook {
+		t.Fatalf("got %v, %v; want one facebook", got, err)
+	}
+	if fields := fieldErrors(t, mustErr(NormalizeSocialNetworks(nil, enabled))); fields["networks"] == "" {
+		t.Errorf("empty networks: fields = %v", fields)
+	}
+	if fields := fieldErrors(t, mustErr(NormalizeSocialNetworks([]string{"myspace"}, enabled))); fields["networks[0]"] == "" {
+		t.Errorf("unknown network: fields = %v", fields)
+	}
+
+	// A network the server knows but whose scraper is not running is a conflict,
+	// not a validation error: the request is fine, the server is not set up for it.
+	_, err = NormalizeSocialNetworks([]string{"facebook"}, nil)
+	if appErr := apperr.From(err); appErr == nil || appErr.Code != apperr.CodeConflict {
+		t.Fatalf("disabled scraper: err = %v, want a conflict", err)
+	}
+}
+
+func mustErr(_ []string, err error) error { return err }
+
+func TestSocialScrapeConfigSurvivesNormalize(t *testing.T) {
+	cfg := Config{SocialNetworks: []string{SocialNetworkFacebook}, SocialMissingEmailOnly: true}.Normalize()
+	if !cfg.IsSocialScrape() || !cfg.SocialMissingEmailOnly {
+		t.Fatalf("normalized config lost the social scrape: %+v", cfg)
+	}
+	if cfg.IsRecrawl() {
+		t.Error("a social media scrape must not read as a re-crawl")
+	}
+}

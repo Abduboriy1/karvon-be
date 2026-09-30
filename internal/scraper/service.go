@@ -27,6 +27,8 @@ type Service struct {
 	publisher  *events.Publisher
 	log        *slog.Logger
 	maxQueries int
+	// socialNetworks are the networks a social media scrape can read right now.
+	socialNetworks map[string]bool
 }
 
 // Enqueuer is the queue surface the service needs. It matches queue.Enqueuer.
@@ -40,6 +42,9 @@ type Enqueuer interface {
 // ServiceConfig configures the job service.
 type ServiceConfig struct {
 	MaxQueriesPerJob int
+	// SocialNetworks lists the networks whose scraper is running, e.g. Facebook
+	// when KARVON_FB_SCRAPE_ENABLED is set.
+	SocialNetworks []string
 }
 
 // NewService builds the job service.
@@ -47,7 +52,14 @@ func NewService(store *db.Store, q Enqueuer, publisher *events.Publisher, log *s
 	if cfg.MaxQueriesPerJob <= 0 {
 		cfg.MaxQueriesPerJob = 500
 	}
-	return &Service{store: store, queue: q, publisher: publisher, log: log, maxQueries: cfg.MaxQueriesPerJob}
+	networks := make(map[string]bool, len(cfg.SocialNetworks))
+	for _, network := range cfg.SocialNetworks {
+		networks[network] = true
+	}
+	return &Service{
+		store: store, queue: q, publisher: publisher, log: log,
+		maxQueries: cfg.MaxQueriesPerJob, socialNetworks: networks,
+	}
 }
 
 // CreateInput is a validated-on-entry job creation request.
@@ -292,6 +304,9 @@ func (s *Service) Rerun(ctx context.Context, id uuid.UUID) (db.JobRow, error) {
 	if cfg.IsRecrawl() && cfg.RecrawlOf == nil {
 		return db.JobRow{}, apperr.Conflict("a re-crawl of selected businesses has no search to re-run")
 	}
+	if cfg.IsSocialScrape() {
+		return db.JobRow{}, apperr.Conflict("a social media scrape has no search to re-run")
+	}
 	cfg.RecrawlOf = nil
 	cfg.RecrawlTargets = nil
 	cfg = cfg.Normalize()
@@ -341,7 +356,11 @@ func (s *Service) Recrawl(ctx context.Context, id uuid.UUID, targets []string) (
 	// stays one level deep however often the user re-crawls.
 	// A re-crawl of hand-picked businesses has no search behind it, so it stays one
 	// and has no config to validate.
-	selection := cfg.IsRecrawl() && cfg.RecrawlOf == nil
+	// A social media scrape was of hand-picked businesses too; re-crawling it
+	// visits their websites instead.
+	selection := (cfg.IsRecrawl() && cfg.RecrawlOf == nil) || cfg.IsSocialScrape()
+	cfg.SocialNetworks = nil
+	cfg.SocialMissingEmailOnly = false
 	if !selection {
 		origin := id
 		if cfg.RecrawlOf != nil {
@@ -432,6 +451,90 @@ func (s *Service) RecrawlBusinesses(ctx context.Context, filter db.BusinessFilte
 			return nil
 		},
 	})
+}
+
+// SocialScrapeInput is a validated-on-entry social media scrape request.
+type SocialScrapeInput struct {
+	Filter   db.BusinessFilter
+	Networks []string
+	// MissingEmailOnly skips the businesses that already have an email address.
+	MissingEmailOnly bool
+}
+
+// SocialScrapeBusinesses creates a job that reads the public social profile of each
+// business matching the filter (or exactly its IDs), looking for an email address
+// and a phone number. Businesses without a profile on any of the networks count as
+// nothing to do, the way a re-crawl treats a business with no website.
+func (s *Service) SocialScrapeBusinesses(ctx context.Context, in SocialScrapeInput) (db.JobRow, error) {
+	networks, err := NormalizeSocialNetworks(in.Networks, s.socialNetworks)
+	if err != nil {
+		return db.JobRow{}, err
+	}
+	total, err := s.store.CountBusinesses(ctx, in.Filter)
+	if err != nil {
+		return db.JobRow{}, apperr.Internal(err)
+	}
+	switch {
+	case total == 0:
+		return db.JobRow{}, apperr.Conflict("no businesses match; nothing to scrape")
+	case total > MaxRecrawlBusinesses:
+		return db.JobRow{}, apperr.Validation("too many businesses to scrape at once", apperr.FieldError{
+			Field:   "filter",
+			Message: fmt.Sprintf("matches %d businesses; narrow it to at most %d", total, MaxRecrawlBusinesses),
+		})
+	}
+	businessIDs, err := s.store.ListBusinessIDs(ctx, in.Filter, MaxRecrawlBusinesses)
+	if err != nil {
+		return db.JobRow{}, apperr.Internal(err)
+	}
+	// The job row needs a source even though no provider is called, exactly like a
+	// re-crawl of hand-picked businesses.
+	sourceID, err := s.store.PickRecrawlSource(ctx, businessIDs)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.JobRow{}, apperr.Conflict("no Google Maps source is configured")
+	}
+	if err != nil {
+		return db.JobRow{}, apperr.Internal(fmt.Errorf("scraper: pick social scrape source: %w", err))
+	}
+
+	cfg := Config{
+		Terms:                  []string{},
+		Locations:              []Location{},
+		MaxPerQuery:            DefaultMaxPerQuery,
+		Concurrency:            DefaultConcurrency,
+		SocialNetworks:         networks,
+		SocialMissingEmailOnly: in.MissingEmailOnly,
+	}
+	name := fmt.Sprintf("%s scrape of %d business(es)", socialNetworkLabels(networks), len(businessIDs))
+	return s.insertJob(ctx, name, sourceID, cfg, newJob{
+		stats: Stats{ListingsFound: len(businessIDs)},
+		args:  func(jobID uuid.UUID) river.JobArgs { return SocialScrapeArgs{JobID: jobID} },
+		prepare: func(ctx context.Context, q *dbgen.Queries, jobID uuid.UUID) error {
+			if _, err := q.AddJobResults(ctx, dbgen.AddJobResultsParams{JobID: jobID, BusinessIds: businessIDs}); err != nil {
+				return fmt.Errorf("scraper: add job results: %w", err)
+			}
+			return nil
+		},
+	})
+}
+
+// socialNetworkLabels names networks for a job title: "Facebook", "Facebook and Instagram".
+func socialNetworkLabels(networks []string) string {
+	labels := make([]string, 0, len(networks))
+	for _, network := range networks {
+		labels = append(labels, SocialNetworkLabel(network))
+	}
+	return strings.Join(labels, " and ")
+}
+
+// SocialNetworkLabel is a network's display name.
+func SocialNetworkLabel(network string) string {
+	switch network {
+	case SocialNetworkFacebook:
+		return "Facebook"
+	default:
+		return network
+	}
 }
 
 // SourceRoleMaps is the sources.role value of a Google Maps data provider. The same

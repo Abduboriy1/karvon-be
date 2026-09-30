@@ -748,3 +748,44 @@ func TestFakeFailQueueIsConsumedInOrder(t *testing.T) {
 		t.Fatalf("StaticFactory.For with Err = %v", err)
 	}
 }
+
+func TestGoogleOAuthSessionAndWarmup(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/oauth/google/init":
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"session_id": "s-1",
+				"auth_url":   "https://accounts.google.com/o/oauth2/v2/auth?state=api_session:s-1",
+				"expires_at": "2026-09-28T10:30:00.000Z",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/oauth/session/status/s-1":
+			writeJSON(t, w, http.StatusOK, map[string]any{
+				"status": "error", "error": "account_exists", "error_description": "Account already exists in another workspace",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts/warmup/enable":
+			body := decodeBody(t, r)
+			if emails, _ := body["emails"].([]any); len(emails) != 1 || emails[0] != "jane@shop.test" {
+				t.Errorf("warmup body = %v", body)
+			}
+			writeJSON(t, w, http.StatusOK, map[string]any{"id": "job-1", "status": "pending", "type": "warmup_enable"})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := newClient(t, server, instantly.Config{})
+
+	session, err := client.StartGoogleOAuth(context.Background())
+	if err != nil || session.SessionID != "s-1" || !strings.HasPrefix(session.AuthURL, "https://accounts.google.com/") ||
+		session.ExpiresAt.IsZero() {
+		t.Fatalf("StartGoogleOAuth = %+v, %v", session, err)
+	}
+	status, err := client.OAuthSessionStatus(context.Background(), "s-1")
+	if err != nil || status.Status != instantly.OAuthError || status.Error != "account_exists" {
+		t.Fatalf("OAuthSessionStatus = %+v, %v", status, err)
+	}
+	job, err := client.EnableWarmup(context.Background(), []string{"jane@shop.test"})
+	if err != nil || job.ID != "job-1" {
+		t.Fatalf("EnableWarmup = %+v, %v", job, err)
+	}
+}

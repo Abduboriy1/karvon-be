@@ -59,6 +59,20 @@ type Config struct {
 	// crawler's built-in list, e.g. "/reach-us,/pages/contact-us".
 	CrawlContactPaths []string `env:"CRAWL_CONTACT_PATHS" envSeparator:","`
 
+	// FBScrapeEnabled offers Facebook in the social media scrape, which reads the
+	// public details box of each business's Facebook Page through the fb-scrape
+	// service (services/fb-scrape). The same variable makes `make dev` start it.
+	FBScrapeEnabled bool   `env:"FB_SCRAPE_ENABLED" envDefault:"false"`
+	FBScrapeURL     string `env:"FB_SCRAPE_URL" envDefault:"http://localhost:8000"`
+	// FBScrapeAPIKey is sent as X-API-Key; empty when the service has no API_KEY.
+	FBScrapeAPIKey string `env:"FB_SCRAPE_API_KEY"`
+	// FBScrapeTimeout bounds one page, including the time it waits in the service's
+	// queue for a proxy that is not resting.
+	FBScrapeTimeout time.Duration `env:"FB_SCRAPE_TIMEOUT" envDefault:"3m"`
+	// FBScrapeConcurrency is how many pages are in flight at once. Match the
+	// service's MAX_CONCURRENCY: more only queue up inside it.
+	FBScrapeConcurrency int `env:"FB_SCRAPE_CONCURRENCY" envDefault:"20"`
+
 	ProviderTimeout   time.Duration `env:"PROVIDER_TIMEOUT" envDefault:"5m"`
 	ApifyBaseURL      string        `env:"APIFY_BASE_URL" envDefault:"https://api.apify.com"`
 	OutscraperBaseURL string        `env:"OUTSCRAPER_BASE_URL" envDefault:"https://api.outscraper.cloud"`
@@ -208,6 +222,34 @@ type Config struct {
 	CampaignMaxImport             int           `env:"CAMPAIGN_MAX_IMPORT" envDefault:"50000"`
 	WebhookMaxBodyBytes           int64         `env:"WEBHOOK_MAX_BODY_BYTES" envDefault:"1048576"`
 
+	// Domains module. The Cloudflare API token and account ID live in the database
+	// (Settings → Domains); everything here is wiring.
+	//
+	// CloudflareTimeout bounds one Cloudflare call. Registration waits up to ten
+	// seconds on Cloudflare's side before answering, so this stays well above that.
+	CloudflareBaseURL string        `env:"CLOUDFLARE_BASE_URL" envDefault:"https://api.cloudflare.com/client/v4"`
+	CloudflareTimeout time.Duration `env:"CLOUDFLARE_TIMEOUT" envDefault:"45s"`
+	// DomainPollInterval is how often a registration Cloudflare is still working on
+	// is asked about again; DomainMaxWait is when a purchase stops waiting and hands
+	// what is left to a person.
+	DomainPollInterval time.Duration `env:"DOMAIN_POLL_INTERVAL" envDefault:"15s"`
+	DomainMaxWait      time.Duration `env:"DOMAIN_MAX_WAIT" envDefault:"30m"`
+
+	// Mailboxes module (Google Workspace). The service-account key and the admin
+	// email live in the database (Settings → Mailboxes); everything here is wiring.
+	GoogleTokenURL            string        `env:"GOOGLE_TOKEN_URL" envDefault:"https://oauth2.googleapis.com/token"`
+	GoogleDirectoryURL        string        `env:"GOOGLE_DIRECTORY_URL" envDefault:"https://admin.googleapis.com/admin/directory/v1"`
+	GoogleSiteVerificationURL string        `env:"GOOGLE_SITE_VERIFICATION_URL" envDefault:"https://www.googleapis.com/siteVerification/v1"`
+	GoogleTimeout             time.Duration `env:"GOOGLE_TIMEOUT" envDefault:"30s"`
+	// WorkspacePollInterval is how often Google is asked again to verify a domain
+	// whose record it cannot see yet; WorkspaceVerifyMaxWait is when a setup stops
+	// asking and hands the domain to a person.
+	WorkspacePollInterval  time.Duration `env:"WORKSPACE_POLL_INTERVAL" envDefault:"1m"`
+	WorkspaceVerifyMaxWait time.Duration `env:"WORKSPACE_VERIFY_MAX_WAIT" envDefault:"2h"`
+	// WorkspaceInstantlyPollInterval is how often an open Instantly sign-in session
+	// is checked while a person connects a mailbox.
+	WorkspaceInstantlyPollInterval time.Duration `env:"WORKSPACE_INSTANTLY_POLL_INTERVAL" envDefault:"3s"`
+
 	EventRetentionDays int           `env:"EVENT_RETENTION_DAYS" envDefault:"30"`
 	SSEPingInterval    time.Duration `env:"SSE_PING_INTERVAL" envDefault:"15s"`
 
@@ -299,6 +341,12 @@ func (c Config) Validate() error {
 	if c.CrawlMaxExtraPages < 0 || c.CrawlMaxExtraPages > 20 {
 		errs = append(errs, errors.New(EnvPrefix+"CRAWL_MAX_EXTRA_PAGES must be between 0 and 20"))
 	}
+	if c.FBScrapeConcurrency < 1 || c.FBScrapeConcurrency > 100 {
+		errs = append(errs, errors.New(EnvPrefix+"FB_SCRAPE_CONCURRENCY must be between 1 and 100"))
+	}
+	if c.FBScrapeEnabled && c.FBScrapeURL == "" {
+		errs = append(errs, errors.New(EnvPrefix+"FB_SCRAPE_URL is required when "+EnvPrefix+"FB_SCRAPE_ENABLED is true"))
+	}
 	if c.VerifySelfConcurrency < 1 || c.VerifySelfConcurrency > 64 {
 		errs = append(errs, errors.New(EnvPrefix+"VERIFY_SELF_CONCURRENCY must be between 1 and 64"))
 	}
@@ -385,6 +433,39 @@ func (c Config) Validate() error {
 	}
 	if c.WebhookMaxBodyBytes < 1024 {
 		errs = append(errs, errors.New(EnvPrefix+"WEBHOOK_MAX_BODY_BYTES must be at least 1024"))
+	}
+	if !strings.HasPrefix(c.CloudflareBaseURL, "http://") && !strings.HasPrefix(c.CloudflareBaseURL, "https://") {
+		errs = append(errs, errors.New(EnvPrefix+"CLOUDFLARE_BASE_URL must start with http:// or https://"))
+	}
+	if c.CloudflareTimeout < 15*time.Second {
+		errs = append(errs, errors.New(EnvPrefix+"CLOUDFLARE_TIMEOUT must be at least 15s; registration alone can take 10s"))
+	}
+	if c.DomainPollInterval < 100*time.Millisecond {
+		errs = append(errs, errors.New(EnvPrefix+"DOMAIN_POLL_INTERVAL must be at least 100ms"))
+	}
+	if c.DomainMaxWait < time.Minute {
+		errs = append(errs, errors.New(EnvPrefix+"DOMAIN_MAX_WAIT must be at least 1m"))
+	}
+	for _, u := range []struct{ name, value string }{
+		{"GOOGLE_TOKEN_URL", c.GoogleTokenURL},
+		{"GOOGLE_DIRECTORY_URL", c.GoogleDirectoryURL},
+		{"GOOGLE_SITE_VERIFICATION_URL", c.GoogleSiteVerificationURL},
+	} {
+		if !strings.HasPrefix(u.value, "http://") && !strings.HasPrefix(u.value, "https://") {
+			errs = append(errs, errors.New(EnvPrefix+u.name+" must start with http:// or https://"))
+		}
+	}
+	if c.GoogleTimeout < time.Second {
+		errs = append(errs, errors.New(EnvPrefix+"GOOGLE_TIMEOUT must be at least 1s"))
+	}
+	if c.WorkspacePollInterval < 100*time.Millisecond {
+		errs = append(errs, errors.New(EnvPrefix+"WORKSPACE_POLL_INTERVAL must be at least 100ms"))
+	}
+	if c.WorkspaceVerifyMaxWait < time.Minute {
+		errs = append(errs, errors.New(EnvPrefix+"WORKSPACE_VERIFY_MAX_WAIT must be at least 1m"))
+	}
+	if c.WorkspaceInstantlyPollInterval < 100*time.Millisecond {
+		errs = append(errs, errors.New(EnvPrefix+"WORKSPACE_INSTANTLY_POLL_INTERVAL must be at least 100ms"))
 	}
 	if c.OpenAIAPIKey != "" && strings.TrimSpace(c.OpenAIModel) == "" {
 		errs = append(errs, errors.New(EnvPrefix+"OPENAI_MODEL is required when "+EnvPrefix+"OPENAI_API_KEY is set"))

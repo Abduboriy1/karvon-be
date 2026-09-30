@@ -243,6 +243,39 @@ type ContactSuppression struct {
 	LiftedNote      *string
 }
 
+type DomainPurchase struct {
+	ID               uuid.UUID
+	Status           string
+	AutoRenew        bool
+	Currency         string
+	QuotedTotalCents int64
+	ItemCount        int16
+	Error            *string
+	CreatedAt        time.Time
+	StartedAt        *time.Time
+	FinishedAt       *time.Time
+	UpdatedAt        time.Time
+}
+
+type DomainPurchaseItem struct {
+	ID               uuid.UUID
+	PurchaseID       uuid.UUID
+	Position         int16
+	DomainName       string
+	Status           string
+	QuotedCostCents  int64
+	CostCents        *int64
+	RenewalCostCents *int64
+	RegisterAttempts int16
+	AttemptedAt      *time.Time
+	ErrorCode        *string
+	ErrorMessage     *string
+	RegisteredAt     *time.Time
+	ExpiresAt        *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type EmailComponent struct {
 	ID             uuid.UUID
 	Type           string
@@ -472,6 +505,12 @@ type ProviderEvent struct {
 	Error          *string
 }
 
+type RegistrarSetting struct {
+	ID                  int16
+	CloudflareAccountID *string
+	UpdatedAt           time.Time
+}
+
 type ScrapeCategory struct {
 	ID        uuid.UUID
 	Name      string
@@ -610,4 +649,55 @@ type VerificationSetting struct {
 	PaidThreshold int32
 	PaidMinScore  int32
 	UpdatedAt     time.Time
+}
+
+type WorkspaceDomain struct {
+	ID                uuid.UUID
+	DomainName        string
+	Status            string
+	VerificationToken *string
+	DkimSelector      *string
+	AddedAt           *time.Time
+	DnsPublishedAt    *time.Time
+	VerifiedAt        *time.Time
+	DkimPublishedAt   *time.Time
+	ErrorCode         *string
+	ErrorMessage      *string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type WorkspaceMailbox struct {
+	ID                        uuid.UUID
+	DomainID                  uuid.UUID
+	Position                  int16
+	Email                     string
+	GivenName                 string
+	FamilyName                string
+	PasswordEnc               []byte
+	Status                    string
+	CreateAttempts            int16
+	GoogleUserID              *string
+	ErrorCode                 *string
+	ErrorMessage              *string
+	ProvisionedAt             *time.Time
+	InstantlyStatus           *string
+	InstantlySessionID        *string
+	InstantlyAuthUrl          *string
+	InstantlySessionExpiresAt *time.Time
+	InstantlyAccountID        *string
+	InstantlyError            *string
+	InstantlyConnectedAt      *time.Time
+	InstantlyWarmup           bool
+	InstantlyWarmupEnabledAt  *time.Time
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+}
+
+type WorkspaceSetting struct {
+	ID                     int16
+	AdminEmail             *string
+	ServiceAccountEmail    *string
+	ServiceAccountClientID *string
+	UpdatedAt              time.Time
 }

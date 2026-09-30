@@ -122,14 +122,11 @@ func (w *CrawlWorker) crawl(ctx context.Context, jobID uuid.UUID, biz dbgen.GetB
 	d := w.deps
 
 	if reuse && biz.Domain != nil && *biz.Domain != "" {
-		siblingID, err := d.Store.FindFreshCrawledSibling(ctx, dbgen.FindFreshCrawledSiblingParams{
-			Domain:     biz.Domain,
-			WebsiteKey: business.WebsiteKey(*biz.Website),
-			ExcludeID:  biz.ID,
-			MaxAgeDays: clampInt32(d.Config.RecrawlAfterDays),
-		})
-		switch {
-		case err == nil:
+		siblingID, found, err := w.freshSibling(ctx, biz)
+		if err != nil {
+			return 0, err
+		}
+		if found {
 			copied, copyErr := d.Ingestor.CopyEmailsFrom(ctx, siblingID, biz.ID, *biz.Domain)
 			if copyErr != nil {
 				return 0, copyErr
@@ -141,8 +138,6 @@ func (w *CrawlWorker) crawl(ctx context.Context, jobID uuid.UUID, biz dbgen.GetB
 				"reused %d address(es) for %s from a crawl of the same page in the last %d days",
 				copied, *biz.Domain, d.Config.RecrawlAfterDays)
 			return copied, nil
-		case !errors.Is(err, pgx.ErrNoRows):
-			return 0, fmt.Errorf("jobs: find crawled sibling: %w", err)
 		}
 	}
 
@@ -187,6 +182,30 @@ func (w *CrawlWorker) crawl(ctx context.Context, jobID uuid.UUID, biz dbgen.GetB
 		d.logLine(ctx, jobID, events.LevelDebug, "crawled %s: no emails found", result.Domain)
 	}
 	return stored, crawlErr
+}
+
+// freshSibling finds another listing of the same page crawled within the retention
+// window. The query matches on the path, which SQL can compute; the query string is
+// compared here, since pages on one path often differ only by it: every Facebook page
+// without a vanity name is "facebook.com/profile.php?id=…".
+func (w *CrawlWorker) freshSibling(ctx context.Context, biz dbgen.GetBusinessRow) (uuid.UUID, bool, error) {
+	d := w.deps
+	candidates, err := d.Store.ListFreshCrawledSiblings(ctx, dbgen.ListFreshCrawledSiblingsParams{
+		Domain:     biz.Domain,
+		PathKey:    business.WebsitePathKey(*biz.Website),
+		ExcludeID:  biz.ID,
+		MaxAgeDays: clampInt32(d.Config.RecrawlAfterDays),
+	})
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("jobs: find crawled sibling: %w", err)
+	}
+	key := business.WebsiteKey(*biz.Website)
+	for _, c := range candidates {
+		if c.Website != nil && business.WebsiteKey(*c.Website) == key {
+			return c.ID, true, nil
+		}
+	}
+	return uuid.Nil, false, nil
 }
 
 // saveSocials stores the social profiles a crawl found.

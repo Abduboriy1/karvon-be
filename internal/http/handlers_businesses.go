@@ -8,9 +8,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/bory/karvon-be/internal/apperr"
 	"github.com/bory/karvon-be/internal/business"
 	"github.com/bory/karvon-be/internal/db"
 	"github.com/bory/karvon-be/internal/http/gen"
+	"github.com/bory/karvon-be/internal/scraper"
 )
 
 // businessUpdateRequest mirrors the spec's BusinessUpdate; notes is raw JSON so an
@@ -27,13 +29,13 @@ type businessBulkRequest struct {
 
 type businessExportRequest struct {
 	JobID       *uuid.UUID `json:"job_id"`
-	Category    *string    `json:"category" validate:"omitempty,max=200"`
+	Category    []string   `json:"category" validate:"omitempty,max=50,dive,max=200"`
 	State       *string    `json:"state" validate:"omitempty,max=100"`
 	City        *string    `json:"city" validate:"omitempty,max=200"`
 	HasEmail    *bool      `json:"has_email"`
 	Suppressed  *bool      `json:"suppressed"`
 	Q           *string    `json:"q" validate:"omitempty,max=200"`
-	EmailSource *string    `json:"email_source" validate:"omitempty,oneof=mailto regex provider"`
+	EmailSource *string    `json:"email_source" validate:"omitempty,oneof=mailto regex provider facebook"`
 	//nolint:lll // the rule list is clearer on one line
 	VerificationTag []string    `json:"verification_tag" validate:"omitempty,dive,oneof=green light_green yellow orange red"`
 	IDs             []uuid.UUID `json:"ids" validate:"omitempty,max=5000"`
@@ -45,13 +47,19 @@ func (s *Server) ListBusinesses(w http.ResponseWriter, r *http.Request, params g
 
 	filter := db.BusinessFilter{
 		JobID:      params.JobId,
-		Category:   params.Category,
 		State:      params.State,
 		City:       params.City,
 		Q:          params.Q,
 		HasEmail:   params.HasEmail,
 		Suppressed: params.Suppressed,
 		Excluded:   params.Excluded,
+	}
+	if params.Category != nil {
+		filter.Categories = compact(*params.Category)
+		if err := validateCategories(filter.Categories); err != nil {
+			WriteError(w, r, err)
+			return
+		}
 	}
 	if params.EmailSource != nil {
 		source := string(*params.EmailSource)
@@ -167,11 +175,47 @@ func (s *Server) RecrawlBusinesses(w http.ResponseWriter, r *http.Request) {
 	s.writeJob(w, r, http.StatusCreated, row)
 }
 
+type businessSocialScrapeRequest struct {
+	businessExportRequest
+	Networks []string `json:"networks" validate:"required,min=1,max=1,dive,oneof=facebook"`
+	// MissingEmailOnly defaults to true: a business that already has an address is
+	// usually not worth a page load through a proxy.
+	MissingEmailOnly *bool `json:"missing_email_only"`
+}
+
+// SocialScrapeBusinesses implements POST /businesses/social-scrape: a job that reads
+// the social profiles of the listed ids, or of every business matching the filter.
+func (s *Server) SocialScrapeBusinesses(w http.ResponseWriter, r *http.Request) {
+	var req businessSocialScrapeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	if err := validateStruct(req); err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	missingEmailOnly := true
+	if req.MissingEmailOnly != nil {
+		missingEmailOnly = *req.MissingEmailOnly
+	}
+	row, err := s.jobs.SocialScrapeBusinesses(r.Context(), scraper.SocialScrapeInput{
+		Filter:           req.filter(),
+		Networks:         req.Networks,
+		MissingEmailOnly: missingEmailOnly,
+	})
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	s.writeJob(w, r, http.StatusCreated, row)
+}
+
 // filter is the business set a request selects: exactly its ids, or its filters.
 func (req businessExportRequest) filter() db.BusinessFilter {
 	return db.BusinessFilter{
 		JobID:       req.JobID,
-		Category:    req.Category,
+		Categories:  compact(req.Category),
 		State:       req.State,
 		City:        req.City,
 		Q:           req.Q,
@@ -231,4 +275,40 @@ func (s *Server) streamCSV(w http.ResponseWriter, r *http.Request, filter db.Bus
 		return
 	}
 	s.log.Info("csv export finished", "rows", rows, "filename", filename)
+}
+
+// maxCategoryFilters mirrors the spec's maxItems on the category filter.
+const maxCategoryFilters = 50
+
+// validateCategories applies the spec's bounds to the repeatable category query
+// parameter; the JSON bodies get the same rules from their validate tags.
+func validateCategories(categories []string) error {
+	if len(categories) > maxCategoryFilters {
+		return apperr.Validation("category filter is invalid",
+			apperr.FieldError{Field: "category", Message: fmt.Sprintf("at most %d values", maxCategoryFilters)})
+	}
+	for _, category := range categories {
+		if len(category) > 200 {
+			return apperr.Validation("category filter is invalid",
+				apperr.FieldError{Field: "category", Message: "each value is at most 200 characters"})
+		}
+	}
+	return nil
+}
+
+// compact drops blank and repeated values, so an empty ?category= filters nothing.
+func compact(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }

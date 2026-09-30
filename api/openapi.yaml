@@ -38,6 +38,8 @@ tags:
   - name: campaign-analytics
   - name: integrations
   - name: webhooks
+  - name: domains
+  - name: workspace
 
 paths:
   /healthz:
@@ -617,7 +619,13 @@ paths:
           schema: { type: string, format: uuid }
         - name: category
           in: query
-          schema: { type: string, maxLength: 200 }
+          description: Repeatable; matches a business whose category equals any of the values
+          schema:
+            type: array
+            maxItems: 50
+            items: { type: string, maxLength: 200 }
+          style: form
+          explode: true
         - name: state
           in: query
           schema: { type: string, maxLength: 100 }
@@ -747,6 +755,39 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
           description: No business matches, or no Google Maps source exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /businesses/social-scrape:
+    post:
+      tags: [businesses]
+      operationId: socialScrapeBusinesses
+      summary: Read the social profiles of selected or filtered businesses for emails and phone numbers
+      description: |
+        Creates a social media scrape job for exactly `ids`, or for every business
+        matching the filters when `ids` is absent. Each business with a profile on one
+        of `networks` (found by the website crawl) has that public page read: the
+        email address it shows is added to the business with source "facebook", and
+        its phone number too when the business has none. Businesses without such a
+        profile are skipped. No provider search runs and nothing is billed. At most
+        20000 businesses per request.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BusinessSocialScrapeRequest' }
+      responses:
+        '201':
+          description: New social media scrape job
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: No business matches, the network's scraper is not enabled, or no Google Maps source exists
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2844,6 +2885,644 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
+  /domains/settings:
+    get:
+      tags: [domains]
+      operationId: getDomainSettings
+      summary: The Cloudflare Registrar connection and the purchase limits
+      responses:
+        '200':
+          description: Connection settings; the API token itself is never returned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [domains]
+      operationId: updateDomainSettings
+      summary: Set the Cloudflare account ID, the API token and the on/off switch
+      description: |
+        Every field is optional: an omitted field is left as it is, and `null` clears
+        `account_id` or `api_token`. The token needs the account's Registrar edit
+        permission and is stored AES-GCM encrypted. Switching `enabled` off stops new
+        searches and purchases, and any domain of a running purchase that has not been
+        sent to Cloudflare yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DomainSettingsUpdate' }
+      responses:
+        '200':
+          description: The saved settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /domains/settings/test:
+    post:
+      tags: [domains]
+      operationId: testDomainConnection
+      summary: Prove the token and account ID with one read that costs nothing
+      description: Works while the connection is switched off, so a token can be checked first.
+      responses:
+        '200':
+          description: The connection works
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainConnectionTest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The account ID or the token is missing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: Cloudflare rejected the token or account, or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /domains/search:
+    get:
+      tags: [domains]
+      operationId: searchDomains
+      summary: Suggest domains for a keyword, with prices
+      description: |
+        Fast and based on Cloudflare's cached data, so it is for discovery only. Use
+        `POST /domains/check` for the authoritative answer before buying; the purchase
+        itself checks again.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: A keyword, phrase or partial domain
+          schema: { type: string, minLength: 1, maxLength: 100 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        - name: extensions
+          in: query
+          description: Repeatable extension filter, e.g. `extensions=com&extensions=dev`
+          schema:
+            type: array
+            maxItems: 20
+            items: { type: string, maxLength: 63 }
+          style: form
+          explode: true
+      responses:
+        '200':
+          description: Suggestions
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainOfferList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The Cloudflare connection is not configured or is switched off
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Cloudflare rejected the token or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /domains/check:
+    post:
+      tags: [domains]
+      operationId: checkDomains
+      summary: Real-time availability and price for up to 20 domains
+      description: |
+        Asks the registries directly, reserving nothing. Names are normalised (lower
+        case, punycode, no scheme or path) and de-duplicated; the answer keeps the
+        request's order. Only offers with `purchasable: true` can be bought.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DomainCheckRequest' }
+      responses:
+        '200':
+          description: One offer per distinct domain
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainOfferList' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The Cloudflare connection is not configured or is switched off
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Cloudflare rejected the token or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /domains/purchases:
+    get:
+      tags: [domains]
+      operationId: listDomainPurchases
+      summary: Past and running purchases, newest first
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated purchases, each with its domains
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainPurchaseList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [domains]
+      operationId: createDomainPurchase
+      summary: Buy up to 10 domains at once (billed, not refundable)
+      description: |
+        The confirm step of checkout. `confirm` must be `true`, and every domain carries
+        the registration price the operator was shown (`expected_cost_cents`, from
+        `pricing.registration_cost_cents` of a check).
+
+        Before anything is queued every domain is checked with Cloudflare again. If any
+        is gone, premium, or now dearer than confirmed, nothing is bought and the 409
+        lists each offending domain in `details` (`field` is `domains[i]`). Otherwise
+        the purchase is queued and answered with 202; poll `GET /domains/purchases/{id}`
+        until `status` is no longer `queued` or `processing`.
+
+        Limits: at most 10 domains per purchase, and only one purchase runs at a time
+        (409 while another is queued or processing). Each domain is checked once more
+        right before it is registered and skipped if its price rose above the confirmed
+        one. Registrations are charged to the Cloudflare account's default payment
+        method; the price is the first-year cost.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DomainPurchaseCreate' }
+      responses:
+        '202':
+          description: The purchase is queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainPurchase' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: |
+            Another purchase is in progress, the connection is not ready, or some
+            domains can no longer be bought as confirmed (listed in `details`)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Cloudflare rejected the token or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /domains/purchases/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [domains]
+      operationId: getDomainPurchase
+      summary: One purchase and how each of its domains ended
+      responses:
+        '200':
+          description: The purchase
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainPurchase' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /domains/registrations:
+    get:
+      tags: [domains]
+      operationId: listDomainRegistrations
+      summary: Every domain the Cloudflare account owns, oldest first
+      description: Read live from Cloudflare; domains registered outside Karvon are included.
+      responses:
+        '200':
+          description: The account's domains
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainRegistrationList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The Cloudflare connection is not configured or is switched off
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: Cloudflare rejected the token or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /domains/registrations/{domain}:
+    parameters:
+      - $ref: '#/components/parameters/DomainPath'
+    get:
+      tags: [domains]
+      operationId: getDomainRegistration
+      summary: One domain the account owns
+      responses:
+        '200':
+          description: The domain
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainRegistration' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The Cloudflare connection is not configured or is switched off
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Cloudflare rejected the token or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    patch:
+      tags: [domains]
+      operationId: updateDomainRegistration
+      summary: Switch automatic renewal on or off
+      description: |
+        The only setting Cloudflare's API can change today. Turning `auto_renew` on
+        authorises Cloudflare to charge the renewal up to 30 days before expiry. A 202
+        means Cloudflare accepted the change but had not applied it when it answered;
+        the body is then the domain as it stood.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DomainRegistrationUpdate' }
+      responses:
+        '200':
+          description: The updated domain
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainRegistration' }
+        '202':
+          description: Accepted, still being applied
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DomainRegistration' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The connection is not ready, or Cloudflare refused the change
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Cloudflare rejected the token or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /workspace/settings:
+    get:
+      tags: [workspace]
+      operationId: getWorkspaceSettings
+      summary: The Google Workspace connection and what domain-wide delegation needs
+      description: |
+        `service_account_client_id` and `scopes` are what the Admin console asks for
+        under Security → Access and data control → API controls → Domain-wide
+        delegation. The key itself is never returned.
+      responses:
+        '200':
+          description: Connection settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [workspace]
+      operationId: updateWorkspaceSettings
+      summary: Set the service-account key, the admin it acts as, and the on/off switch
+      description: |
+        Every field is optional: an omitted field is left as it is, and `null` clears
+        `admin_email` or `service_account_key`. The key is the JSON file downloaded
+        from the Google Cloud console; it is checked to be a service-account key and
+        stored AES-GCM encrypted. `admin_email` must be a super admin of the Workspace
+        account. Switching `enabled` off stops new setups and any running one.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceSettingsUpdate' }
+      responses:
+        '200':
+          description: The saved settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /workspace/settings/test:
+    post:
+      tags: [workspace]
+      operationId: testWorkspaceConnection
+      summary: Prove the key, the delegation and the admin with one read that costs nothing
+      description: Works while the connection is switched off, so a key can be checked first.
+      responses:
+        '200':
+          description: The connection works; the Workspace account it reached
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceConnectionTest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The admin email or the key is missing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: Google refused the service account, or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /workspace/domains:
+    get:
+      tags: [workspace]
+      operationId: listWorkspaceDomains
+      summary: Domains set up (or being set up) for Workspace mail, newest first
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated domains, each with its mailboxes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceDomainList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [workspace]
+      operationId: createWorkspaceDomain
+      summary: Set up Workspace mail on a domain and create its mailboxes (billed per mailbox)
+      description: |
+        The domain's DNS must be a zone in the Cloudflare account (every domain bought
+        through `/domains/purchases` is), and both the Cloudflare and the Google
+        connections must be ready. Each mailbox is a Workspace user and a paid licence,
+        so `confirm` must be `true`; at most 5 mailboxes per domain.
+
+        Answered with 202. In the background the domain is added to Workspace, the
+        verification, MX (`smtp.google.com`), SPF and DMARC (`p=none`) records are
+        published in Cloudflare, Google is asked to verify the domain until it can see
+        the record, and the mailboxes are created with generated passwords. Poll
+        `GET /workspace/domains/{domain}` until `status` leaves `provisioning`.
+
+        Existing mail records are never overwritten, except ones that say the domain
+        has no mail (a null MX, `v=spf1 -all`); anything else fails the setup with
+        `dns_conflict` for a person to resolve.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceDomainCreate' }
+      responses:
+        '202':
+          description: The setup is queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceDomain' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: |
+            The domain is already set up, has no zone in the Cloudflare account, or a
+            connection is not ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Cloudflare rejected the token or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /workspace/domains/{domain}:
+    parameters:
+      - $ref: '#/components/parameters/DomainPath'
+    get:
+      tags: [workspace]
+      operationId: getWorkspaceDomain
+      summary: One domain's setup and its mailboxes
+      responses:
+        '200':
+          description: The setup
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceDomain' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /workspace/domains/{domain}/retry:
+    parameters:
+      - $ref: '#/components/parameters/DomainPath'
+    post:
+      tags: [workspace]
+      operationId: retryWorkspaceDomain
+      summary: Resume a failed setup where it stopped
+      description: |
+        Steps already done are skipped. Mailboxes Google refused are sent again; one
+        whose address already belonged to someone else (`address_taken`) stays failed.
+      responses:
+        '202':
+          description: The setup is queued again
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceDomain' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The setup is not failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /workspace/domains/{domain}/dkim:
+    parameters:
+      - $ref: '#/components/parameters/DomainPath'
+    put:
+      tags: [workspace]
+      operationId: publishWorkspaceDkim
+      summary: Publish the DKIM key generated in the Admin console
+      description: |
+        Google has no API for DKIM keys. Generate one in the Admin console (Apps →
+        Google Workspace → Gmail → Authenticate email → the domain → Generate new
+        record) and send the TXT value shown there. It is published at
+        `<selector>._domainkey.<domain>` in Cloudflare, replacing an older key, and the
+        domain becomes `active`. Then press "Start authentication" in the Admin console.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceDkimUpdate' }
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceDomain' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The domain is still provisioning or failed, or the Cloudflare connection is not ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Cloudflare rejected the change or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /workspace/domains/{domain}/mailboxes:
+    parameters:
+      - $ref: '#/components/parameters/DomainPath'
+    post:
+      tags: [workspace]
+      operationId: addWorkspaceMailboxes
+      summary: Add mailboxes to a domain that is already set up (billed per mailbox)
+      description: |
+        For a domain in `dkim_required` or `active`. The domain goes back to
+        `provisioning` while the new mailboxes are created (every finished step is
+        skipped) and returns to where it was. A domain holds at most 5 mailboxes,
+        failed ones included until they are removed with
+        `DELETE /workspace/mailboxes/{id}`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceMailboxesAdd' }
+      responses:
+        '202':
+          description: The mailboxes are queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceDomain' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The domain is provisioning or failed, or the connection is not ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /workspace/mailboxes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    delete:
+      tags: [workspace]
+      operationId: deleteWorkspaceMailbox
+      summary: Remove a failed mailbox, freeing its slot
+      description: |
+        Only a mailbox that was never created (`failed`) is removed; it exists nowhere
+        but here. A created mailbox is a Workspace user and is deleted in the Admin
+        console.
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The mailbox is not failed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /workspace/mailboxes/{id}/instantly:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [workspace]
+      operationId: connectWorkspaceMailboxToInstantly
+      summary: Start connecting a created mailbox to Instantly
+      description: |
+        Uses Instantly's Google OAuth flow. Open `auth_url` in a new tab and sign in
+        as the mailbox (its password is at `GET /workspace/mailboxes/{id}/credentials`);
+        the session lives about ten minutes. Karvon follows it in the background:
+        poll the domain until the mailbox's `instantly_status` leaves `connecting`.
+        On `connected`, warmup is turned on when `warmup` was true and the sending
+        accounts are refreshed. Asking again while a session is open returns it; after
+        `failed` or `expired` it starts a new one.
+
+        Needs the Instantly source (Sources) enabled with a key carrying the
+        accounts:create, accounts:read and accounts:update scopes.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WorkspaceInstantlyConnect' }
+      responses:
+        '200':
+          description: The session to sign in through
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceInstantlyConnection' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The mailbox is not created or already connected, or Instantly is not configured
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: Instantly rejected the key or is unreachable
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /workspace/mailboxes/{id}/credentials:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [workspace]
+      operationId: getWorkspaceMailboxCredentials
+      summary: A created mailbox's address and initial password
+      description: |
+        What a person signs in with to connect the mailbox to the sending tool. Sent
+        with `Cache-Control: no-store`. A password changed in Google later is not
+        reflected here.
+      responses:
+        '200':
+          description: The credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceMailboxCredentials' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The mailbox has not been created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2886,6 +3565,12 @@ components:
       required: true
       description: The opaque token minted when the webhook was registered
       schema: { type: string, minLength: 8, maxLength: 200 }
+    DomainPath:
+      name: domain
+      in: path
+      required: true
+      description: A fully qualified domain name, e.g. example.com
+      schema: { type: string, minLength: 3, maxLength: 253 }
 
   responses:
     BadRequest:
@@ -2956,14 +3641,15 @@ components:
 
     SourceKind:
       type: string
-      enum: [apify, outscraper, emailable]
+      enum: [apify, outscraper, emailable, cloudflare, google_workspace]
 
     SourceRole:
       type: string
       description: |
         What a source is for. Maps providers supply business listings; the verifier
-        checks email addresses. Both store their key the same way.
-      enum: [maps, verifier]
+        checks email addresses; the registrar buys domains; the mailboxes source
+        creates Google Workspace mailboxes. All store their key the same way.
+      enum: [maps, verifier, registrar, mailboxes]
 
     Source:
       type: object
@@ -3247,6 +3933,15 @@ components:
           readOnly: true
           items: { $ref: '#/components/schemas/RecrawlTarget' }
           description: Set on every re-crawl job; what it looked for.
+        social_networks:
+          type: array
+          readOnly: true
+          items: { $ref: '#/components/schemas/SocialScrapeNetwork' }
+          description: Set on a social media scrape; the networks whose pages it read.
+        social_missing_email_only:
+          type: boolean
+          readOnly: true
+          description: Set on a social media scrape that skipped businesses already having an email.
       additionalProperties: false
 
     JobCreate:
@@ -3319,7 +4014,7 @@ components:
 
     EmailSource:
       type: string
-      enum: [mailto, regex, provider]
+      enum: [mailto, regex, provider, facebook]
 
     BusinessEmail:
       type: object
@@ -3456,7 +4151,11 @@ components:
       type: object
       properties:
         job_id: { type: string, format: uuid }
-        category: { type: string, maxLength: 200 }
+        category:
+          type: array
+          maxItems: 50
+          items: { type: string, maxLength: 200 }
+          description: Matches a business whose category equals any of the values
         state: { type: string, maxLength: 100 }
         city: { type: string, maxLength: 200 }
         has_email: { type: boolean }
@@ -3499,7 +4198,11 @@ components:
           maxItems: 2
           items: { $ref: '#/components/schemas/RecrawlTarget' }
         job_id: { type: string, format: uuid }
-        category: { type: string, maxLength: 200 }
+        category:
+          type: array
+          maxItems: 50
+          items: { type: string, maxLength: 200 }
+          description: Matches a business whose category equals any of the values
         state: { type: string, maxLength: 100 }
         city: { type: string, maxLength: 200 }
         has_email: { type: boolean }
@@ -3514,6 +4217,47 @@ components:
           maxItems: 5000
           items: { type: string, format: uuid }
           description: When present, re-crawls exactly these businesses and ignores the filters
+      additionalProperties: false
+
+    SocialScrapeNetwork:
+      type: string
+      enum: [facebook]
+      description: A network whose public pages a social media scrape can read.
+
+    BusinessSocialScrapeRequest:
+      type: object
+      description: The same selection as BusinessExportRequest, plus which networks to read.
+      required: [networks]
+      properties:
+        networks:
+          type: array
+          minItems: 1
+          maxItems: 1
+          items: { $ref: '#/components/schemas/SocialScrapeNetwork' }
+        missing_email_only:
+          type: boolean
+          default: true
+          description: Skip businesses that already have an email address.
+        job_id: { type: string, format: uuid }
+        category:
+          type: array
+          maxItems: 50
+          items: { type: string, maxLength: 200 }
+          description: Matches a business whose category equals any of the values
+        state: { type: string, maxLength: 100 }
+        city: { type: string, maxLength: 200 }
+        has_email: { type: boolean }
+        suppressed: { type: boolean }
+        q: { type: string, maxLength: 200 }
+        email_source: { $ref: '#/components/schemas/EmailSource' }
+        verification_tag:
+          type: array
+          items: { $ref: '#/components/schemas/VerificationTag' }
+        ids:
+          type: array
+          maxItems: 5000
+          items: { type: string, format: uuid }
+          description: When present, scrapes exactly these businesses and ignores the filters
       additionalProperties: false
 
     ScraperStatsJobEmails:
@@ -5604,3 +6348,465 @@ components:
         instantly_bounced: { type: integer, format: int64 }
         instantly_replies: { type: integer, format: int64 }
         instantly_bounce_rate: { type: number, format: double }
+
+    DomainSettings:
+      type: object
+      required: [source_id, account_id, has_token, enabled, ready, max_domains_per_purchase, max_check_domains]
+      properties:
+        source_id:
+          type: string
+          format: uuid
+          description: The sources row holding the token (kind `cloudflare`, role `registrar`)
+        account_id: { type: string, nullable: true, description: The 32-character Cloudflare account ID }
+        has_token: { type: boolean, description: Whether an API token is stored; the token itself is never returned }
+        enabled: { type: boolean }
+        ready:
+          type: boolean
+          description: Account ID and token are set and the connection is enabled; search and purchase need this
+        last_tested_at: { type: string, format: date-time, nullable: true }
+        last_test_ok: { type: boolean, nullable: true }
+        max_domains_per_purchase: { type: integer, example: 10, description: Hard limit on one purchase }
+        max_check_domains: { type: integer, example: 20, description: Most names one check accepts }
+
+    DomainSettingsUpdate:
+      type: object
+      properties:
+        account_id:
+          type: string
+          nullable: true
+          maxLength: 64
+          description: Omit to keep, null to clear
+        api_token:
+          type: string
+          nullable: true
+          maxLength: 500
+          description: Plaintext Cloudflare API token; stored AES-GCM encrypted. Omit to keep, null to clear.
+        enabled: { type: boolean }
+      additionalProperties: false
+
+    DomainConnectionTest:
+      type: object
+      required: [ok, tested_at]
+      properties:
+        ok: { type: boolean }
+        tested_at: { type: string, format: date-time }
+
+    DomainPricing:
+      type: object
+      description: |
+        Prices as Cloudflare wrote them (decimal strings in the currency's major unit)
+        and in cents, which is what totals and `expected_cost_cents` use.
+      required: [currency, registration_cost, renewal_cost, registration_cost_cents, renewal_cost_cents]
+      properties:
+        currency: { type: string, example: USD }
+        registration_cost: { type: string, example: '10.11', description: First-year registration cost }
+        renewal_cost: { type: string, example: '10.11', description: Per-year renewal cost }
+        registration_cost_cents: { type: integer, format: int64, example: 1011 }
+        renewal_cost_cents: { type: integer, format: int64, example: 1011 }
+
+    DomainOffer:
+      type: object
+      required: [name, registrable, purchasable]
+      properties:
+        name: { type: string, description: The domain in punycode, e.g. example.com }
+        registrable: { type: boolean, description: What Cloudflare answered }
+        purchasable:
+          type: boolean
+          description: Can be added to a purchase — registrable, standard tier and priced
+        tier: { type: string, nullable: true, description: '`standard` or `premium`; premium cannot be bought through the API' }
+        reason:
+          type: string
+          nullable: true
+          description: |
+            Why it cannot be registered: domain_unavailable, domain_premium,
+            extension_not_supported_via_api, extension_not_supported,
+            extension_disallows_registration, not_returned
+        pricing:
+          allOf:
+            - $ref: '#/components/schemas/DomainPricing'
+          nullable: true
+
+    DomainOfferList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/DomainOffer' }
+
+    DomainCheckRequest:
+      type: object
+      required: [domains]
+      properties:
+        domains:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 253 }
+      additionalProperties: false
+
+    DomainPurchaseLine:
+      type: object
+      required: [name, expected_cost_cents]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 253 }
+        expected_cost_cents:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The registration price shown to the operator; nothing is bought above it
+      additionalProperties: false
+
+    DomainPurchaseCreate:
+      type: object
+      required: [domains, confirm]
+      properties:
+        domains:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items: { $ref: '#/components/schemas/DomainPurchaseLine' }
+        auto_renew:
+          type: boolean
+          default: false
+          description: Turn automatic renewal on for every domain bought
+        confirm:
+          type: boolean
+          description: Must be true; the request is refused otherwise
+      additionalProperties: false
+
+    DomainPurchaseStatus:
+      type: string
+      description: |
+        queued and processing are in flight (only one purchase can be at a time);
+        succeeded, partial and failed are final.
+      enum: [queued, processing, succeeded, partial, failed]
+
+    DomainPurchaseItemStatus:
+      type: string
+      description: |
+        pending — not yet sent; registering — sent, outcome being confirmed with
+        Cloudflare; succeeded — registered and billed; failed — not registered;
+        action_required — finish it in the Cloudflare dashboard.
+      enum: [pending, registering, succeeded, failed, action_required]
+
+    DomainPurchaseItem:
+      type: object
+      required: [id, domain_name, position, status, quoted_cost_cents, register_attempts, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        domain_name: { type: string }
+        position: { type: integer, minimum: 0, maximum: 9 }
+        status: { $ref: '#/components/schemas/DomainPurchaseItemStatus' }
+        quoted_cost_cents: { type: integer, format: int64, description: The confirmed price }
+        cost_cents:
+          type: integer
+          format: int64
+          nullable: true
+          description: The price Cloudflare quoted right before registering
+        renewal_cost_cents: { type: integer, format: int64, nullable: true }
+        register_attempts: { type: integer }
+        error_code: { type: string, nullable: true }
+        error_message: { type: string, nullable: true }
+        registered_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    DomainPurchase:
+      type: object
+      required: [id, status, auto_renew, currency, item_count, quoted_total_cents, charged_total_cents,
+                 succeeded_count, failed_count, action_required_count, in_flight_count, created_at, items]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/DomainPurchaseStatus' }
+        auto_renew: { type: boolean }
+        currency: { type: string }
+        item_count: { type: integer, minimum: 1, maximum: 10 }
+        quoted_total_cents: { type: integer, format: int64, description: Sum of the confirmed prices }
+        charged_total_cents: { type: integer, format: int64, description: Sum of the prices of the domains registered }
+        succeeded_count: { type: integer }
+        failed_count: { type: integer }
+        action_required_count: { type: integer }
+        in_flight_count: { type: integer, description: Domains pending or registering }
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/DomainPurchaseItem' }
+
+    DomainPurchaseList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/DomainPurchase' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    DomainRegistration:
+      type: object
+      required: [domain_name, status, auto_renew, locked, privacy_mode]
+      properties:
+        domain_name: { type: string }
+        status:
+          type: string
+          description: |
+            active, registration_pending, transfer_pending, expired, suspended,
+            redemption_period or pending_delete
+        created_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        auto_renew: { type: boolean }
+        locked: { type: boolean }
+        privacy_mode: { type: string, description: '`redaction` or `off`' }
+
+    DomainRegistrationList:
+      type: object
+      required: [data]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/DomainRegistration' }
+
+    DomainRegistrationUpdate:
+      type: object
+      required: [auto_renew]
+      properties:
+        auto_renew: { type: boolean }
+      additionalProperties: false
+
+    WorkspaceSettings:
+      type: object
+      required: [source_id, admin_email, service_account_email, service_account_client_id, has_key, enabled,
+                 ready, scopes, max_mailboxes_per_domain]
+      properties:
+        source_id:
+          type: string
+          format: uuid
+          description: The sources row holding the key (kind `google_workspace`, role `mailboxes`)
+        admin_email: { type: string, nullable: true, description: The super admin the service account acts as }
+        service_account_email: { type: string, nullable: true, description: From the stored key }
+        service_account_client_id:
+          type: string
+          nullable: true
+          description: From the stored key; the Client ID to enter for domain-wide delegation
+        has_key: { type: boolean, description: Whether a key is stored; the key itself is never returned }
+        enabled: { type: boolean }
+        ready:
+          type: boolean
+          description: Admin email and key are set and the connection is enabled; setups need this
+        last_tested_at: { type: string, format: date-time, nullable: true }
+        last_test_ok: { type: boolean, nullable: true }
+        scopes:
+          type: array
+          items: { type: string }
+          description: The OAuth scopes to delegate to the service account
+        max_mailboxes_per_domain: { type: integer, example: 5, description: Hard limit on one domain }
+
+    WorkspaceSettingsUpdate:
+      type: object
+      properties:
+        admin_email:
+          type: string
+          nullable: true
+          maxLength: 254
+          description: Omit to keep, null to clear
+        service_account_key:
+          type: string
+          nullable: true
+          maxLength: 10000
+          description: |
+            The service-account JSON key file's contents; stored AES-GCM encrypted.
+            Omit to keep, null to clear.
+        enabled: { type: boolean }
+      additionalProperties: false
+
+    WorkspaceConnectionTest:
+      type: object
+      required: [ok, tested_at, domain_count]
+      properties:
+        ok: { type: boolean }
+        tested_at: { type: string, format: date-time }
+        primary_domain: { type: string, nullable: true, description: The Workspace account's primary domain }
+        domain_count: { type: integer, description: Domains in the Workspace account, primary included }
+
+    WorkspaceMailboxInput:
+      type: object
+      required: [local_part, given_name, family_name]
+      properties:
+        local_part:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: The part before the @; letters, digits, dots, dashes, underscores
+          example: jane
+        given_name: { type: string, minLength: 1, maxLength: 60 }
+        family_name: { type: string, minLength: 1, maxLength: 60 }
+      additionalProperties: false
+
+    WorkspaceDomainCreate:
+      type: object
+      required: [domain, mailboxes, confirm]
+      properties:
+        domain: { type: string, minLength: 3, maxLength: 253 }
+        mailboxes:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items: { $ref: '#/components/schemas/WorkspaceMailboxInput' }
+        confirm:
+          type: boolean
+          description: Must be true; every mailbox is a paid Workspace licence
+      additionalProperties: false
+
+    WorkspaceDomainStatus:
+      type: string
+      description: |
+        provisioning — being added, published, verified and given its mailboxes;
+        dkim_required — done except DKIM, which needs the key from the Admin console;
+        active — DKIM published; failed — needs a person (see error_code), then retry.
+      enum: [provisioning, dkim_required, active, failed]
+
+    WorkspaceMailboxStatus:
+      type: string
+      description: |
+        pending — not created yet; created — exists in Workspace with the stored
+        password; failed — Google refused it, or the address was someone else's.
+      enum: [pending, created, failed]
+
+    WorkspaceMailbox:
+      type: object
+      required: [id, email, given_name, family_name, position, status, create_attempts, instantly_warmup, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        given_name: { type: string }
+        family_name: { type: string }
+        position: { type: integer, minimum: 0, maximum: 4 }
+        status: { $ref: '#/components/schemas/WorkspaceMailboxStatus' }
+        create_attempts: { type: integer }
+        error_code:
+          type: string
+          nullable: true
+          description: address_taken or mailbox_rejected
+        error_message: { type: string, nullable: true }
+        provisioned_at: { type: string, format: date-time, nullable: true }
+        instantly_status:
+          allOf:
+            - $ref: '#/components/schemas/WorkspaceInstantlyStatus'
+          nullable: true
+          description: Null until a connection to Instantly is started
+        instantly_account_id: { type: string, nullable: true }
+        instantly_error: { type: string, nullable: true, description: Why it failed, or why warmup did not start }
+        instantly_session_expires_at: { type: string, format: date-time, nullable: true }
+        instantly_connected_at: { type: string, format: date-time, nullable: true }
+        instantly_warmup: { type: boolean, description: Warmup was asked for with the connection }
+        instantly_warmup_enabled_at: { type: string, format: date-time, nullable: true }
+        updated_at: { type: string, format: date-time }
+
+    WorkspaceInstantlyStatus:
+      type: string
+      description: |
+        connecting — a sign-in session is open; connected — Instantly has the account;
+        failed — Instantly refused it (see instantly_error); expired — nobody signed in
+        in time.
+      enum: [connecting, connected, failed, expired]
+
+    WorkspaceMailboxesAdd:
+      type: object
+      required: [mailboxes, confirm]
+      properties:
+        mailboxes:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items: { $ref: '#/components/schemas/WorkspaceMailboxInput' }
+        confirm:
+          type: boolean
+          description: Must be true; every mailbox is a paid Workspace licence
+      additionalProperties: false
+
+    WorkspaceInstantlyConnect:
+      type: object
+      properties:
+        warmup:
+          type: boolean
+          default: false
+          description: Turn Instantly warmup on once the mailbox is connected
+      additionalProperties: false
+
+    WorkspaceInstantlyConnection:
+      type: object
+      required: [auth_url, expires_at, mailbox]
+      properties:
+        auth_url:
+          type: string
+          description: Google sign-in to open in a new tab, pre-filled with the mailbox
+        expires_at: { type: string, format: date-time }
+        mailbox: { $ref: '#/components/schemas/WorkspaceMailbox' }
+
+    WorkspaceDomain:
+      type: object
+      required: [id, domain_name, status, created_at, updated_at, mailboxes]
+      properties:
+        id: { type: string, format: uuid }
+        domain_name: { type: string }
+        status: { $ref: '#/components/schemas/WorkspaceDomainStatus' }
+        next_step:
+          type: string
+          nullable: true
+          description: What a person has to do next, when anything
+        verification_token:
+          type: string
+          nullable: true
+          description: The google-site-verification TXT value published at the apex
+        dkim_selector: { type: string, nullable: true }
+        added_at: { type: string, format: date-time, nullable: true, description: Added to Workspace }
+        dns_published_at: { type: string, format: date-time, nullable: true }
+        verified_at: { type: string, format: date-time, nullable: true }
+        dkim_published_at: { type: string, format: date-time, nullable: true }
+        error_code:
+          type: string
+          nullable: true
+          description: |
+            not_configured, auth_failed, dns_auth_failed, zone_not_found, dns_conflict,
+            dns_rejected, domain_rejected, verification_timed_out, mailbox_rejected,
+            aborted
+        error_message: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        mailboxes:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceMailbox' }
+
+    WorkspaceDomainList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/WorkspaceDomain' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    WorkspaceDkimUpdate:
+      type: object
+      required: [value]
+      properties:
+        value:
+          type: string
+          minLength: 1
+          maxLength: 5000
+          description: The TXT value from the Admin console, "v=DKIM1; k=rsa; p=..."
+        selector:
+          type: string
+          maxLength: 63
+          description: The prefix chosen in the Admin console; defaults to `google`
+      additionalProperties: false
+
+    WorkspaceMailboxCredentials:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string }
+        password: { type: string }

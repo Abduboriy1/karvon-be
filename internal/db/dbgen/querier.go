@@ -49,6 +49,9 @@ type Querier interface {
 	ClearDefaultNewsletterAudience(ctx context.Context) error
 	ClearPrimaryEmail(ctx context.Context, businessID uuid.UUID) error
 	ClearTypoSuggestion(ctx context.Context, id uuid.UUID) error
+	// The session id guards every outcome, so a session the operator has since replaced
+	// cannot overwrite the new one.
+	ConnectInstantly(ctx context.Context, arg ConnectInstantlyParams) (WorkspaceMailbox, error)
 	ContactHasEvent(ctx context.Context, arg ContactHasEventParams) (bool, error)
 	CopyJobResults(ctx context.Context, arg CopyJobResultsParams) (int64, error)
 	CountAIGenerations(ctx context.Context, campaignID uuid.NullUUID) (int64, error)
@@ -64,6 +67,7 @@ type Querier interface {
 	CountCampaignsByStatus(ctx context.Context) ([]CountCampaignsByStatusRow, error)
 	CountContactEvents(ctx context.Context, contactID uuid.UUID) (int64, error)
 	CountContactsByStage(ctx context.Context) ([]CountContactsByStageRow, error)
+	CountDomainPurchases(ctx context.Context) (int64, error)
 	CountEmailComponents(ctx context.Context, arg CountEmailComponentsParams) (int64, error)
 	CountEmailVariants(ctx context.Context, arg CountEmailVariantsParams) (int64, error)
 	// Addresses on the master list that have never been through the free stage, whether
@@ -93,10 +97,16 @@ type Querier interface {
 	CountQualifyingForThirdParty(ctx context.Context, arg CountQualifyingForThirdPartyParams) (int64, error)
 	CountSyncRuns(ctx context.Context, kind *string) (int64, error)
 	CountVerificationRuns(ctx context.Context, arg CountVerificationRunsParams) (int64, error)
+	CountWorkspaceDomains(ctx context.Context) (int64, error)
+	// The attempt is counted before the billable call, so the next pass knows whether a
+	// "this address already exists" answer can be its own earlier call landing.
+	CountWorkspaceMailboxAttempt(ctx context.Context, id uuid.UUID) (WorkspaceMailbox, error)
 	CreateAIGeneration(ctx context.Context, arg CreateAIGenerationParams) (AiGeneration, error)
 	CreateCampaign(ctx context.Context, arg CreateCampaignParams) (Campaign, error)
 	CreateContactConsent(ctx context.Context, arg CreateContactConsentParams) (ContactConsent, error)
 	CreateContactSuppression(ctx context.Context, arg CreateContactSuppressionParams) (ContactSuppression, error)
+	CreateDomainPurchase(ctx context.Context, arg CreateDomainPurchaseParams) (DomainPurchase, error)
+	CreateDomainPurchaseItem(ctx context.Context, arg CreateDomainPurchaseItemParams) (DomainPurchaseItem, error)
 	CreateEmailComponent(ctx context.Context, arg CreateEmailComponentParams) (EmailComponent, error)
 	CreateEmailVariant(ctx context.Context, arg CreateEmailVariantParams) (EmailVariant, error)
 	CreateGlobalExclusion(ctx context.Context, arg CreateGlobalExclusionParams) (GlobalExclusion, error)
@@ -107,7 +117,11 @@ type Querier interface {
 	CreateSyncRun(ctx context.Context, arg CreateSyncRunParams) (SyncRun, error)
 	CreateVariantAssignment(ctx context.Context, arg CreateVariantAssignmentParams) (VariantAssignment, error)
 	CreateVerificationRun(ctx context.Context, arg CreateVerificationRunParams) (VerificationRun, error)
+	CreateWorkspaceDomain(ctx context.Context, arg CreateWorkspaceDomainParams) (WorkspaceDomain, error)
+	CreateWorkspaceMailbox(ctx context.Context, arg CreateWorkspaceMailboxParams) (WorkspaceMailbox, error)
 	DeleteCampaignLead(ctx context.Context, id uuid.UUID) (int64, error)
+	// Only a mailbox that was never created is just a record; removing it frees its slot.
+	DeleteFailedWorkspaceMailbox(ctx context.Context, id uuid.UUID) (WorkspaceMailbox, error)
 	DeleteJob(ctx context.Context, id uuid.UUID) (int64, error)
 	DeleteScrapeCategory(ctx context.Context, id uuid.UUID) (int64, error)
 	// When a business already holds the corrected address, its typo'd row is dropped
@@ -115,6 +129,7 @@ type Querier interface {
 	DeleteShadowedBusinessEmails(ctx context.Context, arg DeleteShadowedBusinessEmailsParams) (int64, error)
 	DeleteUnlockedAssignmentsForLead(ctx context.Context, campaignLeadID uuid.UUID) error
 	EmailsPerJob(ctx context.Context, lim int32) ([]EmailsPerJobRow, error)
+	EndInstantlyConnection(ctx context.Context, arg EndInstantlyConnectionParams) error
 	// The exclusion sweep: every lead that is still waiting or in flight and whose
 	// contact is now globally excluded stops. Finished and replied leads are history
 	// and are left as they are.
@@ -122,18 +137,24 @@ type Querier interface {
 	// The company match key is computed by the same function the generated columns
 	// use, so a rule and the rows it should match can never be normalised differently.
 	ExclusionCompanyKey(ctx context.Context, name string) (string, error)
+	FailDomainItem(ctx context.Context, arg FailDomainItemParams) error
 	FailNewsletterSubscription(ctx context.Context, arg FailNewsletterSubscriptionParams) error
+	FailWorkspaceDomain(ctx context.Context, arg FailWorkspaceDomainParams) error
+	FailWorkspaceMailbox(ctx context.Context, arg FailWorkspaceMailboxParams) error
+	// Sets the phone number of a business that has none; a number from the Maps provider
+	// is never overwritten.
+	FillBusinessPhone(ctx context.Context, arg FillBusinessPhoneParams) (int64, error)
 	FindActiveGlobalExclusion(ctx context.Context, arg FindActiveGlobalExclusionParams) (GlobalExclusion, error)
 	FindBusinessByDomain(ctx context.Context, domain *string) (Business, error)
 	FindBusinessByPhoneZip(ctx context.Context, arg FindBusinessByPhoneZipParams) (Business, error)
-	// A sibling is another listing of the same website, not merely the same domain: a
-	// city or a franchise often hosts one page per location under a single domain, and
-	// each page carries its own address. The key ignores scheme, "www.", the query
-	// string and trailing slashes; business.WebsiteKey computes the argument the same way.
-	FindFreshCrawledSibling(ctx context.Context, arg FindFreshCrawledSiblingParams) (uuid.UUID, error)
+	FinishDomainPurchase(ctx context.Context, arg FinishDomainPurchaseParams) (DomainPurchase, error)
 	FinishSyncRun(ctx context.Context, arg FinishSyncRunParams) error
+	// The automatic steps are done. A domain whose DKIM record was already published (a
+	// retry after adding a mailbox failed) goes straight back to active.
+	FinishWorkspaceProvisioning(ctx context.Context, id uuid.UUID) (WorkspaceDomain, error)
 	GetAIGeneration(ctx context.Context, id uuid.UUID) (AiGeneration, error)
 	GetActiveConsent(ctx context.Context, contactID uuid.UUID) (ContactConsent, error)
+	GetActiveDomainPurchase(ctx context.Context) (DomainPurchase, error)
 	GetActiveSuppression(ctx context.Context, contactID uuid.UUID) (ContactSuppression, error)
 	GetBusiness(ctx context.Context, id uuid.UUID) (GetBusinessRow, error)
 	GetCampaign(ctx context.Context, id uuid.UUID) (Campaign, error)
@@ -147,6 +168,7 @@ type Querier interface {
 	GetContactConsent(ctx context.Context, id uuid.UUID) (ContactConsent, error)
 	GetContactSuppression(ctx context.Context, id uuid.UUID) (ContactSuppression, error)
 	GetDefaultNewsletterAudience(ctx context.Context) (NewsletterAudience, error)
+	GetDomainPurchase(ctx context.Context, id uuid.UUID) (DomainPurchase, error)
 	GetEmailComponent(ctx context.Context, id uuid.UUID) (EmailComponent, error)
 	GetEmailSend(ctx context.Context, arg GetEmailSendParams) (EmailSend, error)
 	GetEmailVariant(ctx context.Context, id uuid.UUID) (EmailVariant, error)
@@ -165,15 +187,21 @@ type Querier interface {
 	GetNewsletterSubscriptionByContact(ctx context.Context, arg GetNewsletterSubscriptionByContactParams) (NewsletterSubscription, error)
 	GetNewsletterSubscriptionByHash(ctx context.Context, arg GetNewsletterSubscriptionByHashParams) (NewsletterSubscription, error)
 	GetProviderEvent(ctx context.Context, id uuid.UUID) (ProviderEvent, error)
+	GetRegistrarSettings(ctx context.Context) (RegistrarSetting, error)
 	GetScrapeCategory(ctx context.Context, id uuid.UUID) (ScrapeCategory, error)
 	GetSendingAccount(ctx context.Context, id uuid.UUID) (SendingAccount, error)
 	GetSendingAccountByEmail(ctx context.Context, email string) (SendingAccount, error)
 	GetSource(ctx context.Context, id uuid.UUID) (Source, error)
+	GetSourceByKind(ctx context.Context, kind string) (Source, error)
 	GetVariantAssignment(ctx context.Context, arg GetVariantAssignmentParams) (VariantAssignment, error)
 	GetVariantAssignmentByID(ctx context.Context, id uuid.UUID) (VariantAssignment, error)
 	GetVerificationDomain(ctx context.Context, domain string) (VerificationDomain, error)
 	GetVerificationRun(ctx context.Context, id uuid.UUID) (VerificationRun, error)
 	GetVerificationSettings(ctx context.Context) (VerificationSetting, error)
+	GetWorkspaceDomain(ctx context.Context, id uuid.UUID) (WorkspaceDomain, error)
+	GetWorkspaceDomainByName(ctx context.Context, domainName string) (WorkspaceDomain, error)
+	GetWorkspaceMailbox(ctx context.Context, id uuid.UUID) (WorkspaceMailbox, error)
+	GetWorkspaceSettings(ctx context.Context) (WorkspaceSetting, error)
 	InsertBusiness(ctx context.Context, arg InsertBusinessParams) (Business, error)
 	InsertBusinessEmail(ctx context.Context, arg InsertBusinessEmailParams) (BusinessEmail, error)
 	// A profile already recorded for the business keeps its first page_url.
@@ -217,15 +245,28 @@ type Querier interface {
 	ListContactConsents(ctx context.Context, contactID uuid.UUID) ([]ContactConsent, error)
 	ListContactEvents(ctx context.Context, arg ListContactEventsParams) ([]ContactEvent, error)
 	ListContactSuppressions(ctx context.Context, contactID uuid.UUID) ([]ContactSuppression, error)
+	ListDomainPurchaseItems(ctx context.Context, purchaseID uuid.UUID) ([]DomainPurchaseItem, error)
+	ListDomainPurchaseItemsFor(ctx context.Context, purchaseIds []uuid.UUID) ([]DomainPurchaseItem, error)
+	ListDomainPurchases(ctx context.Context, arg ListDomainPurchasesParams) ([]DomainPurchase, error)
 	ListEmailComponents(ctx context.Context, arg ListEmailComponentsParams) ([]EmailComponent, error)
 	ListEmailComponentsByIDs(ctx context.Context, ids []uuid.UUID) ([]EmailComponent, error)
 	ListEmailSendsForLead(ctx context.Context, campaignLeadID uuid.UUID) ([]EmailSend, error)
 	ListEmailVariants(ctx context.Context, arg ListEmailVariantsParams) ([]EmailVariant, error)
 	ListEmailVariantsByIDs(ctx context.Context, ids []uuid.UUID) ([]EmailVariant, error)
+	// Candidates for a sibling: another listing of the same website, not merely the same
+	// domain. A city or a franchise often hosts one page per location under a single
+	// domain, and each page carries its own address. This matches on the path only
+	// (ignoring scheme, "www.", the query string and trailing slashes, the way
+	// business.WebsitePathKey computes the argument); the caller compares the query
+	// string, which often names the page ("profile.php?id=…", "detail.aspx?s=…").
+	ListFreshCrawledSiblings(ctx context.Context, arg ListFreshCrawledSiblingsParams) ([]ListFreshCrawledSiblingsRow, error)
 	// The job's businesses with a website that still lack what the crawl looks for.
 	ListJobCrawlTargets(ctx context.Context, arg ListJobCrawlTargetsParams) ([]ListJobCrawlTargetsRow, error)
 	ListJobEventsAfter(ctx context.Context, arg ListJobEventsAfterParams) ([]JobEvent, error)
 	ListJobQueries(ctx context.Context, jobID uuid.UUID) ([]JobQuery, error)
+	// The job's businesses with a profile on one network, and that profile (the first one
+	// found when the site links to several), optionally only those still without an email.
+	ListJobSocialTargets(ctx context.Context, arg ListJobSocialTargetsParams) ([]ListJobSocialTargetsRow, error)
 	ListNewsletterAudiences(ctx context.Context) ([]NewsletterAudience, error)
 	// Contacts who could be pushed now, and those one step short with the reason why.
 	ListNewsletterEligibleContacts(ctx context.Context, arg ListNewsletterEligibleContactsParams) ([]ListNewsletterEligibleContactsRow, error)
@@ -254,6 +295,9 @@ type Querier interface {
 	ListVariantComponents(ctx context.Context, variantID uuid.UUID) ([]ListVariantComponentsRow, error)
 	ListVariantsUsingComponent(ctx context.Context, componentID uuid.UUID) ([]EmailVariant, error)
 	ListVerificationRuns(ctx context.Context, arg ListVerificationRunsParams) ([]VerificationRun, error)
+	ListWorkspaceDomains(ctx context.Context, arg ListWorkspaceDomainsParams) ([]WorkspaceDomain, error)
+	ListWorkspaceMailboxes(ctx context.Context, domainID uuid.UUID) ([]WorkspaceMailbox, error)
+	ListWorkspaceMailboxesFor(ctx context.Context, domainIds []uuid.UUID) ([]WorkspaceMailbox, error)
 	// Asynchronous provider runs.
 	//
 	// The claim below is what stops a retry from paying for a second run: a row leaves
@@ -271,6 +315,9 @@ type Querier interface {
 	MarkCampaignLeadTerminal(ctx context.Context, arg MarkCampaignLeadTerminalParams) error
 	MarkCampaignPaused(ctx context.Context, id uuid.UUID) (Campaign, error)
 	MarkCampaignReady(ctx context.Context, id uuid.UUID) (Campaign, error)
+	// The row says "registering" before the billable call is made, so a worker that dies
+	// mid-call leaves a row that is reconciled with Cloudflare instead of retried blind.
+	MarkDomainItemRegistering(ctx context.Context, id uuid.UUID) (DomainPurchaseItem, error)
 	MarkJobQueryDone(ctx context.Context, arg MarkJobQueryDoneParams) error
 	MarkJobQueryFailed(ctx context.Context, arg MarkJobQueryFailedParams) error
 	MarkJobQueryRunning(ctx context.Context, id uuid.UUID) error
@@ -283,12 +330,16 @@ type Querier interface {
 	MarkVerificationRunItem(ctx context.Context, arg MarkVerificationRunItemParams) error
 	MarkVerificationRunRunning(ctx context.Context, id uuid.UUID) error
 	MarkVerificationRunTerminal(ctx context.Context, arg MarkVerificationRunTerminalParams) error
+	MarkWorkspaceDNSPublished(ctx context.Context, id uuid.UUID) error
+	MarkWorkspaceDomainAdded(ctx context.Context, id uuid.UUID) error
+	MarkWorkspaceDomainVerified(ctx context.Context, id uuid.UUID) error
 	// A webhook or a reconcile telling us what Mailchimp now says.
 	MirrorNewsletterSubscriptionStatus(ctx context.Context, arg MirrorNewsletterSubscriptionStatusParams) (NewsletterSubscription, error)
 	// A job row needs a source even when it never searches. Prefer the Maps source that
 	// first found one of the businesses, then the oldest Maps source.
 	PickRecrawlSource(ctx context.Context, businessIds []uuid.UUID) (uuid.UUID, error)
 	PruneJobEvents(ctx context.Context, maxAgeDays int32) (int64, error)
+	PublishWorkspaceDKIM(ctx context.Context, arg PublishWorkspaceDKIMParams) (WorkspaceDomain, error)
 	RecomputeCampaignCounts(ctx context.Context, id uuid.UUID) (Campaign, error)
 	RecomputeJobStats(ctx context.Context, jid uuid.UUID) (RecomputeJobStatsRow, error)
 	RecomputeVerificationRunStats(ctx context.Context, id uuid.UUID) (VerificationRun, error)
@@ -309,8 +360,15 @@ type Querier interface {
 	// produce a verdict can never be released, and the database enforces that too.
 	ReleaseThirdPartySend(ctx context.Context, id uuid.UUID) (int64, error)
 	RemoveGlobalExclusion(ctx context.Context, arg RemoveGlobalExclusionParams) (GlobalExclusion, error)
+	// A domain that is set up takes more mailboxes by going back to provisioning; the
+	// worker skips every finished step and creates the new ones.
+	ReopenWorkspaceDomain(ctx context.Context, id uuid.UUID) (WorkspaceDomain, error)
 	ReplaceVariantComponents(ctx context.Context, variantID uuid.UUID) error
 	RequeueNewsletterSubscription(ctx context.Context, arg RequeueNewsletterSubscriptionParams) (NewsletterSubscription, error)
+	ResetDomainItemPending(ctx context.Context, id uuid.UUID) error
+	// A retry sends refused mailboxes again. An address that belonged to someone else is
+	// left failed: sending it again would count it as ours.
+	ResetFailedWorkspaceMailboxes(ctx context.Context, domainID uuid.UUID) error
 	ResetProviderEvent(ctx context.Context, id uuid.UUID) (ProviderEvent, error)
 	// When a rule is removed, a lead it took out that never reached the provider goes
 	// back to pending, unless its contact is suppressed, another rule still covers it,
@@ -318,6 +376,7 @@ type Querier interface {
 	// from Instantly and has to be imported again deliberately.
 	RestoreExcludedCampaignLeads(ctx context.Context) ([]CampaignLead, error)
 	RetargetBusinessEmails(ctx context.Context, arg RetargetBusinessEmailsParams) (int64, error)
+	RetryWorkspaceDomain(ctx context.Context, id uuid.UUID) (WorkspaceDomain, error)
 	RevokeConsent(ctx context.Context, arg RevokeConsentParams) (ContactConsent, error)
 	SaveProviderRun(ctx context.Context, arg SaveProviderRunParams) error
 	ScraperCounters(ctx context.Context) (ScraperCountersRow, error)
@@ -335,8 +394,10 @@ type Querier interface {
 	SetContactStage(ctx context.Context, arg SetContactStageParams) (Contact, error)
 	SetDefaultAudience(ctx context.Context, audienceID uuid.NullUUID) error
 	SetDefaultNewsletterAudience(ctx context.Context, id uuid.UUID) (NewsletterAudience, error)
+	SetDomainItemPrice(ctx context.Context, arg SetDomainItemPriceParams) error
 	SetEmailComponentStatus(ctx context.Context, arg SetEmailComponentStatusParams) (EmailComponent, error)
 	SetEmailVariantStatus(ctx context.Context, arg SetEmailVariantStatusParams) (EmailVariant, error)
+	SetInstantlyWarmupResult(ctx context.Context, arg SetInstantlyWarmupResultParams) error
 	SetInstantlyWebhook(ctx context.Context, arg SetInstantlyWebhookParams) (CampaignSetting, error)
 	SetInstantlyWebhookStatus(ctx context.Context, arg SetInstantlyWebhookStatusParams) error
 	SetJobStats(ctx context.Context, arg SetJobStatsParams) error
@@ -344,16 +405,27 @@ type Querier interface {
 	SetNewsletterAudienceWebhook(ctx context.Context, arg SetNewsletterAudienceWebhookParams) (NewsletterAudience, error)
 	SetPrimaryEmail(ctx context.Context, id uuid.UUID) error
 	SetProviderRunStatus(ctx context.Context, arg SetProviderRunStatusParams) error
+	SetRegistrarAccountID(ctx context.Context, accountID *string) (RegistrarSetting, error)
 	SetSendReplyClassification(ctx context.Context, arg SetSendReplyClassificationParams) error
 	SetSourceTestResult(ctx context.Context, arg SetSourceTestResultParams) error
 	SetVerificationError(ctx context.Context, arg SetVerificationErrorParams) error
 	SetVerificationRunTotal(ctx context.Context, arg SetVerificationRunTotalParams) error
+	SetWorkspaceAdminEmail(ctx context.Context, adminEmail *string) (WorkspaceSetting, error)
+	SetWorkspaceServiceAccount(ctx context.Context, arg SetWorkspaceServiceAccountParams) (WorkspaceSetting, error)
+	SetWorkspaceVerificationToken(ctx context.Context, arg SetWorkspaceVerificationTokenParams) error
+	StartDomainPurchase(ctx context.Context, id uuid.UUID) (DomainPurchase, error)
+	StartInstantlyConnection(ctx context.Context, arg StartInstantlyConnectionParams) (WorkspaceMailbox, error)
+	SucceedDomainItem(ctx context.Context, arg SucceedDomainItemParams) error
+	SucceedWorkspaceMailbox(ctx context.Context, arg SucceedWorkspaceMailboxParams) error
 	// Provider-reported totals per account over a window, for the accounts list.
 	SumSendingAccountStats(ctx context.Context, since pgtype.Date) ([]SumSendingAccountStatsRow, error)
 	// Every non-terminal lead of a suppressed contact stops where it is.
 	SuppressCampaignLeadsForContact(ctx context.Context, contactID uuid.UUID) ([]CampaignLead, error)
 	SuppressContact(ctx context.Context, arg SuppressContactParams) (Contact, error)
 	TouchContactEvent(ctx context.Context, arg TouchContactEventParams) error
+	// An attempt Google refused without looking at it (throttled, or the credentials
+	// were refused) does not count.
+	UncountWorkspaceMailboxAttempt(ctx context.Context, id uuid.UUID) error
 	UpdateBusinessFlags(ctx context.Context, arg UpdateBusinessFlagsParams) (uuid.UUID, error)
 	UpdateBusinessFromListing(ctx context.Context, arg UpdateBusinessFromListingParams) (Business, error)
 	UpdateCampaign(ctx context.Context, arg UpdateCampaignParams) (Campaign, error)

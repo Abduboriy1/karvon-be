@@ -92,6 +92,56 @@ type Config struct {
 	// A business is revisited when it lacks any of them. A re-crawl of hand-picked
 	// businesses carries targets but no RecrawlOf, and no terms or locations.
 	RecrawlTargets []string `json:"recrawl_targets,omitempty"`
+	// SocialNetworks is set on a social media scrape: the networks whose public
+	// pages are read for the job's businesses, instead of their websites. Like a
+	// re-crawl of hand-picked businesses it has no terms or locations.
+	SocialNetworks []string `json:"social_networks,omitempty"`
+	// SocialMissingEmailOnly limits a social media scrape to the businesses that
+	// have no email address yet.
+	SocialMissingEmailOnly bool `json:"social_missing_email_only,omitempty"`
+}
+
+// Social networks a social media scrape can read. Each needs a service that can read
+// the network's public pages, so the list is shorter than crawler's Network list.
+const (
+	// SocialNetworkFacebook reads the Intro / Details box of a Facebook Page
+	// through the fb-scrape service.
+	SocialNetworkFacebook = "facebook"
+)
+
+// IsSocialScrape reports whether the job reads social profiles instead of running
+// provider searches or crawling websites.
+func (c Config) IsSocialScrape() bool { return len(c.SocialNetworks) > 0 }
+
+// NormalizeSocialNetworks validates and deduplicates the networks a social media
+// scrape asks for, rejecting any the server cannot read right now.
+func NormalizeSocialNetworks(networks []string, available map[string]bool) ([]string, error) {
+	if len(networks) == 0 {
+		return nil, apperr.Validation("pick at least one social network", apperr.FieldError{
+			Field:   "networks",
+			Message: "must not be empty",
+		})
+	}
+	out := make([]string, 0, len(networks))
+	seen := make(map[string]struct{}, len(networks))
+	for i, network := range networks {
+		network = strings.ToLower(strings.TrimSpace(network))
+		if network != SocialNetworkFacebook {
+			return nil, apperr.Validation("social networks are invalid", apperr.FieldError{
+				Field:   fmt.Sprintf("networks[%d]", i),
+				Message: `must be "facebook"`,
+			})
+		}
+		if !available[network] {
+			return nil, apperr.Conflict("the %s scraper is not enabled; set KARVON_FB_SCRAPE_ENABLED=true and restart the API", network)
+		}
+		if _, dup := seen[network]; dup {
+			continue
+		}
+		seen[network] = struct{}{}
+		out = append(out, network)
+	}
+	return out, nil
 }
 
 // Re-crawl targets.
@@ -282,7 +332,9 @@ func (c Config) Normalize() Config {
 		Concurrency: c.Concurrency,
 		RecrawlOf:   c.RecrawlOf,
 
-		RecrawlTargets: c.RecrawlTargets,
+		RecrawlTargets:         c.RecrawlTargets,
+		SocialNetworks:         c.SocialNetworks,
+		SocialMissingEmailOnly: c.SocialMissingEmailOnly,
 	}
 
 	out.Terms = NormalizeTerms(c.Terms)

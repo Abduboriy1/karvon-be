@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -80,17 +81,62 @@ func hasNonWebScheme(raw string) bool {
 }
 
 // websiteKeyPrefix and websiteKeyQuery mirror the regular expressions of the
-// FindFreshCrawledSibling query; the two must stay in step.
+// ListFreshCrawledSiblings query; the two must stay in step.
 var (
 	websiteKeyQuery  = regexp.MustCompile(`[?#].*$`)
 	websiteKeyPrefix = regexp.MustCompile(`(?i)^https?://(www\.)?|/+$`)
 )
 
-// WebsiteKey identifies a website for crawl reuse: two listings with the same key
-// point at the same page. It ignores the scheme, a leading "www.", the query string
-// and trailing slashes, and keeps the path, so one page per location on a shared
-// domain stays distinct.
-func WebsiteKey(website string) string {
+// trackingParams are query parameters that record where a click came from rather
+// than which page it opens. Any "utm_" parameter is one too.
+var trackingParams = map[string]struct{}{
+	"fbclid": {}, "gclid": {}, "gbraid": {}, "wbraid": {}, "dclid": {}, "msclkid": {},
+	"yclid": {}, "mibextid": {}, "igshid": {}, "igsh": {}, "y_source": {},
+	"mc_cid": {}, "mc_eid": {}, "_ga": {}, "wt.mc_id": {},
+}
+
+// WebsitePathKey is the part of WebsiteKey that SQL can compute: the address without
+// its scheme, a leading "www.", the query string and trailing slashes.
+func WebsitePathKey(website string) string {
 	key := websiteKeyQuery.ReplaceAllString(strings.TrimSpace(website), "")
 	return strings.ToLower(websiteKeyPrefix.ReplaceAllString(key, ""))
+}
+
+// WebsiteKey identifies a website for crawl reuse: two listings with the same key
+// point at the same page. It ignores the scheme, a leading "www.", the fragment,
+// trailing slashes and tracking parameters, and keeps the path and the rest of the
+// query string, so one page per location on a shared domain stays distinct whether
+// the path ("/stores/12") or the query ("profile.php?id=12") names it.
+func WebsiteKey(website string) string {
+	key := WebsitePathKey(website)
+	raw, _, _ := strings.Cut(strings.TrimSpace(website), "#")
+	if _, query, ok := strings.Cut(raw, "?"); ok {
+		if params := pageParams(query); params != "" {
+			key += "?" + params
+		}
+	}
+	return key
+}
+
+// pageParams keeps the parameters of a query string that pick the page, lowercased,
+// deduplicated and sorted so their order does not matter.
+func pageParams(query string) string {
+	seen := make(map[string]struct{})
+	var kept []string
+	for _, param := range strings.Split(strings.ToLower(query), "&") {
+		name, _, _ := strings.Cut(param, "=")
+		if name == "" || strings.HasPrefix(name, "utm_") {
+			continue
+		}
+		if _, tracking := trackingParams[name]; tracking {
+			continue
+		}
+		if _, dup := seen[param]; dup {
+			continue
+		}
+		seen[param] = struct{}{}
+		kept = append(kept, param)
+	}
+	sort.Strings(kept)
+	return strings.Join(kept, "&")
 }

@@ -15,10 +15,12 @@ import (
 	"github.com/bory/karvon-be/internal/db"
 	"github.com/bory/karvon-be/internal/db/dbgen"
 	"github.com/bory/karvon-be/internal/exclusion"
+	"github.com/bory/karvon-be/internal/registrar"
 	"github.com/bory/karvon-be/internal/scraper"
 	"github.com/bory/karvon-be/internal/source"
 	"github.com/bory/karvon-be/internal/stats"
 	"github.com/bory/karvon-be/internal/verify"
+	"github.com/bory/karvon-be/internal/workspace"
 )
 
 // The HTTP layer depends on these interfaces rather than on the concrete services, so
@@ -34,6 +36,7 @@ type JobService interface {
 	Rerun(ctx context.Context, id uuid.UUID) (db.JobRow, error)
 	Recrawl(ctx context.Context, id uuid.UUID, targets []string) (db.JobRow, error)
 	RecrawlBusinesses(ctx context.Context, filter db.BusinessFilter, targets []string) (db.JobRow, error)
+	SocialScrapeBusinesses(ctx context.Context, in scraper.SocialScrapeInput) (db.JobRow, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 }
 
@@ -89,6 +92,39 @@ type VerificationService interface {
 	GetRun(ctx context.Context, id uuid.UUID) (dbgen.VerificationRun, error)
 	ListRuns(ctx context.Context, pass, status *string, page, perPage int) (verify.RunListResult, error)
 	CancelRun(ctx context.Context, id uuid.UUID) (dbgen.VerificationRun, error)
+}
+
+// DomainService is the behaviour behind /domains: the Cloudflare connection, search
+// and check, purchases, and the domains the account owns.
+type DomainService interface {
+	Settings(ctx context.Context) (registrar.Settings, error)
+	SaveSettings(ctx context.Context, in registrar.SettingsInput) (registrar.Settings, error)
+	TestConnection(ctx context.Context) (registrar.TestResult, error)
+	Search(ctx context.Context, in registrar.SearchInput) ([]registrar.Offer, error)
+	Check(ctx context.Context, names []string) ([]registrar.Offer, error)
+	CreatePurchase(ctx context.Context, in registrar.PurchaseInput) (registrar.Purchase, error)
+	GetPurchase(ctx context.Context, id uuid.UUID) (registrar.Purchase, error)
+	ListPurchases(ctx context.Context, page, perPage int) (registrar.PurchasePage, error)
+	ListRegistrations(ctx context.Context) ([]registrar.Registration, error)
+	GetRegistration(ctx context.Context, domain string) (registrar.Registration, error)
+	UpdateRegistration(ctx context.Context, domain string, autoRenew bool) (registrar.Registration, bool, error)
+}
+
+// MailboxService is the behaviour behind /workspace: the Google Workspace connection,
+// domain setups, DKIM, and mailbox credentials.
+type MailboxService interface {
+	Settings(ctx context.Context) (workspace.Settings, error)
+	SaveSettings(ctx context.Context, in workspace.SettingsInput) (workspace.Settings, error)
+	TestConnection(ctx context.Context) (workspace.TestResult, error)
+	CreateSetup(ctx context.Context, in workspace.SetupInput) (workspace.Setup, error)
+	GetSetup(ctx context.Context, domain string) (workspace.Setup, error)
+	ListSetups(ctx context.Context, page, perPage int) (workspace.SetupPage, error)
+	RetrySetup(ctx context.Context, domain string) (workspace.Setup, error)
+	PublishDKIM(ctx context.Context, domain, selector, value string) (workspace.Setup, error)
+	MailboxCredentials(ctx context.Context, id uuid.UUID) (workspace.Credentials, error)
+	AddMailboxes(ctx context.Context, domain string, in []workspace.MailboxInput, confirm bool) (workspace.Setup, error)
+	DeleteMailbox(ctx context.Context, id uuid.UUID) error
+	ConnectInstantly(ctx context.Context, id uuid.UUID, warmup bool) (workspace.InstantlyConnection, error)
 }
 
 // StatsService is the behaviour behind /stats/scraper.

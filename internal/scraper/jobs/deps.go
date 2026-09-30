@@ -44,6 +44,8 @@ type Config struct {
 	MaxRunDuration time.Duration
 	// RunPageSize is how many dataset items one fetch reads.
 	RunPageSize int
+	// SocialPageTimeout bounds one social profile page, as the scraper's client does.
+	SocialPageTimeout time.Duration
 }
 
 // Defaults for the asynchronous run settings.
@@ -52,6 +54,7 @@ const (
 	defaultMaxActiveProviderRuns = 6
 	defaultMaxRunDuration        = 12 * time.Hour
 	defaultRunPageSize           = 1000
+	defaultSocialPageTimeout     = 3 * time.Minute
 )
 
 // withDefaults fills in the run settings a caller left at zero.
@@ -68,6 +71,9 @@ func (c Config) withDefaults() Config {
 	if c.RunPageSize <= 0 {
 		c.RunPageSize = defaultRunPageSize
 	}
+	if c.SocialPageTimeout <= 0 {
+		c.SocialPageTimeout = defaultSocialPageTimeout
+	}
 	return c
 }
 
@@ -80,6 +86,9 @@ type Deps struct {
 	Publisher *events.Publisher
 	Ingestor  *business.Ingestor
 	Crawler   *crawler.Crawler
+	// Facebook reads Facebook Pages for a social media scrape; nil when the
+	// fb-scrape service is not enabled.
+	Facebook  FacebookScraper
 	Providers scraper.ProviderFactory
 	Queue     queue.Enqueuer
 	Log       *slog.Logger

@@ -429,7 +429,8 @@ func TestSourceLifecycle(t *testing.T) {
 		}
 		want := map[string]string{
 			"apify": "maps", "outscraper": "maps", "emailable": "verifier",
-			"instantly": "outreach", "mailchimp": "newsletter",
+			"instantly": "outreach", "mailchimp": "newsletter", "cloudflare": "registrar",
+			"google_workspace": "mailboxes",
 		}
 		for kind, role := range want {
 			got, ok := byKind[kind]

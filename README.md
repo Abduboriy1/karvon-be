@@ -30,6 +30,8 @@ progress reaches the browser over Server-Sent Events.
 - [Scrape pipeline](#scrape-pipeline)
 - [Email verification](#email-verification)
 - [Campaigns](#campaigns)
+- [Domains](#domains)
+- [Mailboxes](#mailboxes)
 - [Frontend coverage](#frontend-coverage)
 - [Decisions and deviations from the plan](#decisions-and-deviations-from-the-plan)
 
@@ -246,6 +248,17 @@ as real environment variables. **`.env` is gitignored and must never be committe
 | `KARVON_CAMPAIGN_EVENT_CONCURRENCY` | `4` | Workers applying provider events. |
 | `KARVON_CAMPAIGN_MAX_IMPORT` | `50000` | Ceiling on one lead import. |
 | `KARVON_WEBHOOK_MAX_BODY_BYTES` | `1048576` | Cap on an inbound provider delivery. |
+| `KARVON_CLOUDFLARE_BASE_URL` | `https://api.cloudflare.com/client/v4` | Cloudflare API root. |
+| `KARVON_CLOUDFLARE_TIMEOUT` | `45s` | One Cloudflare call; registration alone can wait 10 s. At least 15 s. |
+| `KARVON_DOMAIN_POLL_INTERVAL` | `15s` | How often a registration Cloudflare is still working on is asked about again. |
+| `KARVON_DOMAIN_MAX_WAIT` | `30m` | When a purchase stops waiting and hands unfinished registrations to a person. |
+| `KARVON_GOOGLE_TOKEN_URL` | `https://oauth2.googleapis.com/token` | Google OAuth token endpoint (tests only change it). |
+| `KARVON_GOOGLE_DIRECTORY_URL` | `https://admin.googleapis.com/admin/directory/v1` | Admin SDK Directory API root. |
+| `KARVON_GOOGLE_SITE_VERIFICATION_URL` | `https://www.googleapis.com/siteVerification/v1` | Site Verification API root. |
+| `KARVON_GOOGLE_TIMEOUT` | `30s` | One Google call. |
+| `KARVON_WORKSPACE_POLL_INTERVAL` | `1m` | How often Google is asked again to verify a domain it cannot see the record of yet. |
+| `KARVON_WORKSPACE_VERIFY_MAX_WAIT` | `2h` | When a setup stops waiting for verification and hands the domain to a person. |
+| `KARVON_WORKSPACE_INSTANTLY_POLL_INTERVAL` | `3s` | How often an open Instantly sign-in session is checked. |
 
 Provider API keys are **not** environment variables: they are entered on the Sources
 page, encrypted with `KARVON_SECRET_KEY` and stored in `sources.api_key_enc`. They are
@@ -406,10 +419,11 @@ Base path `/api/v1`. Everything except `/healthz` and `/openapi.json` requires
 | `POST /jobs/{id}/rerun` | Clone the immutable config into a new job (201). |
 | `POST /jobs/{id}/recrawl` | Re-crawl a finished job's websites (201). Copies the job's businesses into a new job that starts at the crawl stage: no provider search, no spend. Optional body `{"targets":["emails","socials"]}` (default `["emails"]`): a business is revisited when it lacks any target. 409 while the job is still running or when it has no businesses. |
 | `POST /businesses/recrawl` | Re-crawl selected (`ids`) or filtered businesses from the master list for `targets` `emails` and/or `socials` (201, a new job). Same filter fields as `/businesses/export`; at most 20000 businesses. |
+| `POST /businesses/social-scrape` | Read the social profiles of selected (`ids`) or filtered businesses (201, a new job). Body `{"networks":["facebook"],"missing_email_only":true}` plus the `/businesses/export` filter fields. Each business with a Facebook profile has its public page read through `services/fb-scrape`; the email it shows is stored with source `facebook`, its phone number only when the business has none. 409 when nothing matches or `KARVON_FB_SCRAPE_ENABLED` is off. |
 | `DELETE /jobs/{id}` | Delete the job, its queries, events and result links. 204. |
 | `GET /jobs/{id}/events` | **SSE**: `progress`, `log`, `status`. Supports `Last-Event-ID` / `?after=`. |
 | `GET /jobs/{id}/export.csv` | Streamed per-job CSV attachment. |
-| `GET /businesses` | Master list. Filters `job_id`, `category`, `state`, `city`, `has_email`, `suppressed`, `email_source`, `q`; `sort`; pagination. Includes `primary_email`. |
+| `GET /businesses` | Master list. Filters `job_id`, `category` (repeatable, any-of), `state`, `city`, `has_email`, `suppressed`, `email_source`, `q`; `sort`; pagination. Includes `primary_email`. |
 | `GET /businesses/{id}` | Detail with every address and the raw provider payload. |
 | `PATCH /businesses/{id}` | `suppressed` and `notes`. `"notes": null` clears the note. |
 | `POST /businesses/bulk` | `{ ids[], action: "suppress" \| "unsuppress" }` → `{ updated }`. |
@@ -427,6 +441,29 @@ Base path `/api/v1`. Everything except `/healthz` and `/openapi.json` requires
 | `GET /verification/runs` | Run history. Filters `pass`, `status`; pagination. |
 | `GET /verification/runs/{id}` | Run progress, polled while active. |
 | `POST /verification/runs/{id}/cancel` | Cooperative cancel. |
+| `GET /domains/settings` | Cloudflare connection (`account_id`, `has_token`, `enabled`, `ready`) and the limits. |
+| `PUT /domains/settings` | Set `account_id`, `api_token` (encrypted), `enabled`. Omit to keep, `null` to clear. |
+| `POST /domains/settings/test` | One free read proving the token and account. |
+| `GET /domains/search` | Keyword suggestions with prices (`q`, `limit`, repeatable `extensions`). Cached, for discovery. |
+| `POST /domains/check` | Authoritative availability and price for up to 20 names. |
+| `POST /domains/purchases` | Buy up to 10 domains (`confirm: true`, each with `expected_cost_cents`). 202; 409 if one moved or another purchase runs. |
+| `GET /domains/purchases` | Purchase history with each domain's outcome; pagination. |
+| `GET /domains/purchases/{id}` | One purchase, polled until it settles. |
+| `GET /domains/registrations` | Every domain the Cloudflare account owns, live. |
+| `GET /domains/registrations/{domain}` | One owned domain. |
+| `PATCH /domains/registrations/{domain}` | `{ "auto_renew": bool }`, the one setting Cloudflare's API can change. |
+| `GET /workspace/settings` | Google Workspace connection (`admin_email`, `service_account_client_id`, `scopes`, `ready`). |
+| `PUT /workspace/settings` | Set `admin_email`, `service_account_key` (the JSON file, encrypted), `enabled`. Omit to keep, `null` to clear. |
+| `POST /workspace/settings/test` | One free read proving the key, delegation and admin; returns the primary domain. |
+| `POST /workspace/domains` | Set up Workspace mail on a domain with 1-5 mailboxes (`confirm: true`; each is a paid licence). 202. |
+| `GET /workspace/domains` | Setups with their mailboxes; pagination. |
+| `GET /workspace/domains/{domain}` | One setup, polled until it leaves `provisioning`; `next_step` says what a person does next. |
+| `POST /workspace/domains/{domain}/retry` | Resume a `failed` setup where it stopped. 202. |
+| `PUT /workspace/domains/{domain}/dkim` | `{ "value", "selector"? }` from the Admin console; publishes DKIM, domain becomes `active`. |
+| `GET /workspace/mailboxes/{id}/credentials` | A created mailbox's address and initial password (`Cache-Control: no-store`). |
+| `POST /workspace/domains/{domain}/mailboxes` | Add mailboxes to a set-up domain (`confirm: true`; at most 5 per domain). 202. |
+| `DELETE /workspace/mailboxes/{id}` | Remove a `failed` mailbox record, freeing its slot. 204; 409 for a created one. |
+| `POST /workspace/mailboxes/{id}/instantly` | `{ "warmup"? }` → `auth_url` to sign in as the mailbox; Karvon follows the session. |
 
 ### Conventions
 
@@ -546,6 +583,15 @@ A **re-crawl** (`POST /jobs/{id}/recrawl`) creates a new job whose `job_results`
 copied from the source job and enqueues `scrape_recrawl` instead of `scrape`: it marks
 the job running and hands straight over to stage 3, so the provider is never called.
 The new job's `config.recrawl_of` names the original search.
+
+A **social media scrape** (`POST /businesses/social-scrape`) is shaped like a re-crawl
+of hand-picked businesses, but `scrape_social` queues one `scrape_social_page` per
+business with a profile on a requested network (only Facebook today) instead of
+website crawls. Those run on their own `scrape_social` queue, sized by
+`KARVON_FB_SCRAPE_CONCURRENCY` to match the fb-scrape service, which owns the proxy
+pool and per-IP limits. The pages are counted in `sites_total` / `sites_crawled`, so
+the progress bar and finalize stage work unchanged. When the service itself fails a
+page is retried with backoff; a page that shows no details is just logged.
 
 A sixth kind, `prune_job_events`, runs daily and enforces the retention window.
 
@@ -1043,6 +1089,147 @@ Open rate is reported but never used as a headline: privacy proxies pre-fetch
 images, so a high open rate can mean nothing. Reply rate, positive reply rate,
 bounce rate and newsletter conversion are the numbers that carry weight.
 
+
+## Domains
+
+Search, buy and manage domain names through the [Cloudflare Registrar
+API](https://developers.cloudflare.com/registrar/registrar-api/) (beta). Cloudflare is
+the registrar and the source of truth for what the account owns; Karvon stores only
+what it asked for, at what price, and how each registration ended
+(`domain_purchases`, `domain_purchase_items`).
+
+**Connecting.** Settings → Domains takes the 32-character account ID and an API token
+with the account's *Registrar* edit permission. The token lives encrypted in the
+`sources` row of kind `cloudflare` (role `registrar`), like every other provider key;
+the account ID lives in `registrar_settings`. Cloudflare charges the account's default
+payment method and registers against its default registrant contact, so both must be
+set up in the Cloudflare dashboard first.
+
+**Search, check, buy.** Search is fast and cached — for discovery. Check asks the
+registries directly and is what the pick list and the confirm dialog should show. A
+purchase is the confirm button: it carries `confirm: true` and, for every domain, the
+price the operator saw (`expected_cost_cents`). Before anything is queued every
+domain is checked again; if any is gone, premium, or dearer than confirmed, nothing is
+bought and the 409 lists which (`details[].field` is `domains[i]`). Each domain is
+checked once more right before it is registered and skipped if its price rose. Cheaper
+is fine. Registrations are billed on success and are **not refundable**.
+
+**Ten at a time.** A purchase holds at most ten domains and only one purchase runs at
+a time, so no more than ten registrations are ever in flight. Both limits are enforced
+by the schema as well as the service: item positions are `0-9` and unique per
+purchase, and a partial unique index allows one `queued`/`processing` purchase.
+
+**Never paying twice.** Purchases run on the `domains` River queue with one worker,
+registering one domain after another. A domain's row is marked `registering` before
+Cloudflare is called, and the registration call is never retried by the client. If the
+answer is lost (timeout, 5xx, a crash) the next pass asks Cloudflare — registration
+status, then whether the account owns the domain — instead of sending again. Only
+when Cloudflare has no trace of the call after two minutes is it resent, which is safe
+because a domain can be registered only once. Anything still unconfirmed when the
+purchase gives up (`KARVON_DOMAIN_MAX_WAIT`, or the worker's last attempt) becomes
+`action_required` for a person to check in the Cloudflare dashboard, rather than a
+guess either way. Switching the connection off stops the domains of a running
+purchase that have not been sent yet.
+
+**Managing.** `GET /domains/registrations` lists the account's domains live, including
+ones bought outside Karvon. Automatic renewal is the only setting the API can change
+today; turning it on authorises Cloudflare to charge the renewal up to 30 days before
+expiry. Transfers, renewals and contact updates are not in Cloudflare's beta API yet,
+and premium domains cannot be bought through it.
+
+## Mailboxes
+
+Google Workspace mail on domains whose DNS is in the Cloudflare account — every domain
+bought under [Domains](#domains) — and the mailboxes the sending tool connects to.
+Karvon drives the [Admin SDK Directory
+API](https://developers.google.com/admin-sdk/directory) and the [Site Verification
+API](https://developers.google.com/site-verification) as a service account with
+domain-wide delegation, and publishes DNS through the Cloudflare connection.
+
+**One Workspace account, many domains.** Every domain is added to one Workspace
+account as a secondary domain (up to 600 per account). Make that a Workspace account
+used only for outreach, never the one the business runs on: if Google suspends it,
+every mailbox in it stops. Its super admin should be a user that never sends.
+Business Starter is billed per user, not per domain, and Business plans cap an account
+at 300 users; the 14-day trial caps it at 10.
+
+**Connecting.**
+
+1. In the Google Cloud console create a project, enable the *Admin SDK API* and the
+   *Site Verification API*, create a service account and download a JSON key.
+2. In the Workspace Admin console open Security → Access and data control → API
+   controls → Domain-wide delegation, add the service account's client ID (shown under
+   Settings → Mailboxes once the key is saved) with the scopes Settings → Mailboxes
+   lists: `admin.directory.domain`, `admin.directory.user`, `siteverification`.
+3. Under Settings → Mailboxes paste the key and a super admin's address, test, enable.
+4. The Cloudflare API token needs **Zone → Zone → Read** and **Zone → DNS → Edit** on
+   the domains as well as the Registrar permission.
+
+The key lives encrypted in the `sources` row of kind `google_workspace` (role
+`mailboxes`); the admin email and the service account's identity live in
+`workspace_settings`.
+
+**Setting a domain up.** `POST /workspace/domains` takes the domain, one to five
+mailboxes and `confirm: true`. Before anything is queued Karvon checks both
+connections and that the domain has a zone in the Cloudflare account. A worker on the
+`workspace` River queue then adds the domain to Workspace, publishes the Google
+verification TXT, MX (`smtp.google.com`), SPF (`v=spf1 include:_spf.google.com ~all`)
+and DMARC (`v=DMARC1; p=none`), and asks Google to verify the domain — snoozing every
+`KARVON_WORKSPACE_POLL_INTERVAL` while Google cannot see the record yet, up to
+`KARVON_WORKSPACE_VERIFY_MAX_WAIT`. Then it creates the mailboxes with generated
+20-character passwords, stored encrypted and readable through
+`GET /workspace/mailboxes/{id}/credentials` for connecting them to the sending tool.
+
+**DNS is never overwritten.** Records already right are left alone. Records that say
+the domain has no mail — a null MX, `v=spf1 -all` — are replaced. Any other MX or SPF
+record fails the setup with `dns_conflict` and says what to remove; an existing DMARC
+policy is kept as chosen.
+
+**Never paying twice.** Each mailbox is a paid licence. A creation is never repeated
+by the client; the attempt is counted before each call, and Google refuses a second
+user with the same address. So "already exists" on a mailbox's first attempt means
+the address belongs to someone else (`address_taken`, left alone), and on a later
+attempt that an earlier call landed without its answer arriving (recorded as
+created). A throttled or unauthorised call does not count as an attempt.
+
+**DKIM is the manual step.** Google has no API for DKIM keys. When a setup reaches
+`dkim_required`, open Apps → Google Workspace → Gmail → Authenticate email in the
+Admin console, pick the domain, generate a record and send its value to
+`PUT /workspace/domains/{domain}/dkim`. Karvon publishes it at
+`google._domainkey.<domain>` (or the chosen selector) and the domain becomes `active`;
+then press *Start authentication* in the Admin console. Sending the value again
+replaces the key.
+
+**When it stops.** A setup that needs a person — refused credentials, a DNS conflict,
+a domain Google refuses or that belongs to another Workspace account, verification
+that never came through — becomes `failed` with `error_code` and `error_message`.
+`POST /workspace/domains/{domain}/retry` resumes it: finished steps are skipped,
+refused mailboxes are sent again, taken addresses stay failed. Mailboxes and domains
+are never deleted by Karvon; remove them in the Admin console to stop their billing.
+
+**More mailboxes later.** `POST /workspace/domains/{domain}/mailboxes` adds mailboxes
+to a domain in `dkim_required` or `active`. The domain goes back to `provisioning`
+while they are created — every finished step is skipped — and returns to where it
+was. Five per domain counts failed ones too; `DELETE /workspace/mailboxes/{id}`
+removes a failed one (it exists nowhere but in Karvon). A created mailbox is a
+Workspace user and is only ever deleted in the Admin console.
+
+**Connecting to Instantly.** Instantly has no way to take a Google Workspace mailbox
+with a password alone — Google no longer allows password sign-in for IMAP/SMTP, and
+app passwords need a person per mailbox — so Karvon uses Instantly's [Google OAuth
+API](https://developer.instantly.ai/oauth-connection-flow).
+`POST /workspace/mailboxes/{id}/instantly` starts a session and returns `auth_url`,
+Google's sign-in page pre-filled with the mailbox; a person opens it, signs in with
+the password from `/credentials` (first sign-in also asks to accept Google's terms)
+and allows Instantly. The session lives ten minutes. A worker follows it every
+`KARVON_WORKSPACE_INSTANTLY_POLL_INTERVAL`: on success it records the account, turns
+warmup on when `warmup: true` was sent, and queues the sending-accounts sync so the
+mailbox can be put on a campaign; a refusal (`account_exists`, a different account
+signed in) or an expired session is recorded in `instantly_status` / `instantly_error`
+and connecting again starts a new session. The Instantly key needs the
+`accounts:create`, `accounts:read` and `accounts:update` scopes. If Google says the
+app is blocked, allow Instantly under Security → API controls → Manage third-party
+app access in the Admin console.
 
 ## Frontend coverage
 

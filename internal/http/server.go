@@ -43,6 +43,8 @@ type Server struct {
 	exclusions   ExclusionService
 	verification VerificationService
 	campaigns    CampaignService
+	domains      DomainService
+	mailboxes    MailboxService
 	stats        StatsService
 	store        EventStore
 	listener     *events.Listener
@@ -60,6 +62,8 @@ type Deps struct {
 	Exclusions   ExclusionService
 	Verification VerificationService
 	Campaigns    CampaignService
+	Domains      DomainService
+	Mailboxes    MailboxService
 	Stats        StatsService
 	Store        EventStore
 	Listener     *events.Listener
@@ -87,6 +91,8 @@ func NewServer(deps Deps) *Server {
 		exclusions:   deps.Exclusions,
 		verification: deps.Verification,
 		campaigns:    deps.Campaigns,
+		domains:      deps.Domains,
+		mailboxes:    deps.Mailboxes,
 		stats:        deps.Stats,
 		store:        deps.Store,
 		listener:     deps.Listener,
