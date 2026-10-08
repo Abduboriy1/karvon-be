@@ -10,6 +10,7 @@ UPDATE sources
 SET name              = COALESCE(sqlc.narg('name'), name),
     cost_per_1k_cents = COALESCE(sqlc.narg('cost_per_1k_cents'), cost_per_1k_cents),
     enabled           = COALESCE(sqlc.narg('enabled'), enabled),
+    max_active_runs   = COALESCE(sqlc.narg('max_active_runs'), max_active_runs),
     api_key_enc       = CASE WHEN sqlc.arg('set_key')::boolean THEN sqlc.narg('api_key_enc')
                              ELSE api_key_enc END,
     updated_at        = now()

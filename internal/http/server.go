@@ -32,6 +32,9 @@ type Config struct {
 	WebhookMaxBodyBytes int64
 	// MailchimpWebhookTolerance is how much clock skew a Mailchimp signature may carry.
 	MailchimpWebhookTolerance time.Duration
+	// ChatGPTReturnURL is the dashboard page the browser lands on after Sign in
+	// with ChatGPT.
+	ChatGPTReturnURL string
 }
 
 // Server implements gen.ServerInterface over the service layer.

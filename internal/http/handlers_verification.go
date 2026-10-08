@@ -38,7 +38,8 @@ func (s *Server) UpdateVerificationSettings(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	view, err := s.verification.SaveSettings(r.Context(), toDomainSettings(body))
+	current := s.verification.Settings(r.Context())
+	view, err := s.verification.SaveSettings(r.Context(), toDomainSettings(body, current))
 	if err != nil {
 		WriteError(w, r, err)
 		return

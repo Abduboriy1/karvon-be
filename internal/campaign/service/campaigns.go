@@ -122,6 +122,9 @@ func (s *Service) UpdateCampaign(ctx context.Context, id uuid.UUID, in CampaignI
 	if current.Status == campaign.CampaignArchived {
 		return db.CampaignRow{}, apperr.Conflict("an archived campaign cannot be edited")
 	}
+	if err := refuseImported(current); err != nil {
+		return db.CampaignRow{}, err
+	}
 	launched := current.InstantlyCampaignID != nil
 	if launched && (in.Steps != nil && int(current.Steps) != *in.Steps) {
 		return db.CampaignRow{}, apperr.Conflict("the number of steps is fixed once the campaign has been launched")
@@ -314,6 +317,9 @@ func (s *Service) LaunchCampaign(ctx context.Context, id uuid.UUID) (db.Campaign
 	if err != nil {
 		return db.CampaignRow{}, err
 	}
+	if detail.Campaign.Source == campaign.CampaignSourceInstantly {
+		return db.CampaignRow{}, errImported()
+	}
 	switch detail.Campaign.Status {
 	case campaign.CampaignDraft, campaign.CampaignReady, campaign.CampaignFailed:
 	default:
@@ -400,6 +406,13 @@ func (s *Service) SyncCampaign(ctx context.Context, id uuid.UUID) error {
 	return s.enqueue(ctx, campaign.SyncCampaignArgs{CampaignID: id, RequestID: ids.New()})
 }
 
+// SyncCampaigns queues the full pass now: it imports the campaigns started in
+// Instantly, then reconciles every live campaign. A fresh request id, so it runs
+// even while the periodic pass is queued.
+func (s *Service) SyncCampaigns(ctx context.Context) error {
+	return s.enqueue(ctx, campaign.SyncAllArgs{RequestID: ids.New()})
+}
+
 /* ---------------------------------------------------- accounts & variants */
 
 // SetSendingAccounts replaces the sending accounts a campaign uses.
@@ -410,6 +423,9 @@ func (s *Service) SetSendingAccounts(ctx context.Context, id uuid.UUID, accountI
 	}
 	if current.Status == campaign.CampaignArchived {
 		return nil, apperr.Conflict("an archived campaign cannot be edited")
+	}
+	if err := refuseImported(current); err != nil {
+		return nil, err
 	}
 	accounts, err := s.store.ListSendingAccountsByIDs(ctx, accountIDs)
 	if err != nil {
@@ -471,6 +487,9 @@ func (s *Service) SetCampaignVariants(ctx context.Context, id uuid.UUID, items [
 	}
 	if current.Status == campaign.CampaignArchived {
 		return nil, apperr.Conflict("an archived campaign cannot be edited")
+	}
+	if err := refuseImported(current); err != nil {
+		return nil, err
 	}
 	var fields []apperr.FieldError
 	byStep := map[int][]int{}
@@ -561,6 +580,19 @@ func (s *Service) SetCampaignVariants(ctx context.Context, id uuid.UUID, items [
 }
 
 /* -------------------------------------------------------------- helpers */
+
+// errImported refuses an edit to a campaign started in Instantly. Its sequence,
+// leads and sending accounts are Instantly's; Karvon only mirrors it.
+func errImported() error {
+	return apperr.Conflict("this campaign was started in Instantly and can only be changed there")
+}
+
+func refuseImported(c dbgen.Campaign) error {
+	if c.Source == campaign.CampaignSourceInstantly {
+		return errImported()
+	}
+	return nil
+}
 
 func validateSteps(steps int, delays []int) error {
 	if steps < 1 || steps > campaign.MaxSteps {

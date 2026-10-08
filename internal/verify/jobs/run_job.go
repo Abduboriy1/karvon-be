@@ -174,5 +174,9 @@ func baseFilter(filter verify.RunFilter) db.VerificationFilter {
 	if filter.Scope == verify.ScopeSelection {
 		out.IDs = filter.IDs
 	}
+	if filter.Unscored {
+		unscored := false
+		out.FreeComplete = &unscored
+	}
 	return out
 }

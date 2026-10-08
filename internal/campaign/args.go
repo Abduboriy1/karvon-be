@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/bory/karvon-be/internal/queue"
 )
@@ -27,6 +28,7 @@ const (
 	KindNewsletterSyncMembers   = "newsletter_sync_members"
 	KindNewsletterSyncAudiences = "newsletter_sync_audiences"
 	KindExclusionSweep          = "campaign_exclusion_sweep"
+	KindSyncInbox               = "campaign_sync_inbox"
 )
 
 // Newsletter push actions.
@@ -211,6 +213,28 @@ func (SyncLeadsFullArgs) Kind() string { return KindSyncLeadsFull }
 
 // InsertOpts implements river.JobArgsWithInsertOpts.
 func (SyncLeadsFullArgs) InsertOpts() river.InsertOpts { return opts(queue.QueueCampaignSync, 3, nil) }
+
+// SyncInboxArgs mirrors the Unibox's received emails since the newest one stored.
+//
+// A zero RequestID is the periodic pass; each reply webhook queues its own run with
+// a fresh id, so a reply that lands while a pass is already running is still
+// fetched. Completed runs do not count towards uniqueness: the periodic pass must
+// be able to queue again the next time it fires, not once a day when River's
+// cleaner removes the last completed job.
+type SyncInboxArgs struct {
+	RequestID uuid.UUID `json:"request_id,omitempty" river:"unique"`
+}
+
+// Kind implements river.JobArgs.
+func (SyncInboxArgs) Kind() string { return KindSyncInbox }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (SyncInboxArgs) InsertOpts() river.InsertOpts {
+	o := opts(queue.QueueCampaignSync, 3, nil)
+	o.UniqueOpts.ByState = []rivertype.JobState{rivertype.JobStateAvailable, rivertype.JobStatePending,
+		rivertype.JobStateRunning, rivertype.JobStateRetryable, rivertype.JobStateScheduled}
+	return o
+}
 
 // NewsletterPushArgs pushes one subscription to Mailchimp.
 //

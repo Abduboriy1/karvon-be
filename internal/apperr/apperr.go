@@ -21,6 +21,7 @@ const (
 	CodeConflict         Code = "conflict"
 	CodeProviderAuth     Code = "provider_auth"
 	CodeProviderError    Code = "provider_error"
+	CodeAIPlanLimit      Code = "ai_plan_limit"
 	CodeInternal         Code = "internal"
 )
 

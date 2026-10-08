@@ -12,7 +12,7 @@ import (
 )
 
 const getSource = `-- name: GetSource :one
-SELECT id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role FROM sources WHERE id = $1
+SELECT id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role, max_active_runs FROM sources WHERE id = $1
 `
 
 func (q *Queries) GetSource(ctx context.Context, id uuid.UUID) (Source, error) {
@@ -30,12 +30,13 @@ func (q *Queries) GetSource(ctx context.Context, id uuid.UUID) (Source, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Role,
+		&i.MaxActiveRuns,
 	)
 	return i, err
 }
 
 const getSourceByKind = `-- name: GetSourceByKind :one
-SELECT id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role FROM sources WHERE kind = $1
+SELECT id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role, max_active_runs FROM sources WHERE kind = $1
 `
 
 func (q *Queries) GetSourceByKind(ctx context.Context, kind string) (Source, error) {
@@ -53,12 +54,13 @@ func (q *Queries) GetSourceByKind(ctx context.Context, kind string) (Source, err
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Role,
+		&i.MaxActiveRuns,
 	)
 	return i, err
 }
 
 const listSources = `-- name: ListSources :many
-SELECT id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role FROM sources ORDER BY name
+SELECT id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role, max_active_runs FROM sources ORDER BY name
 `
 
 func (q *Queries) ListSources(ctx context.Context) ([]Source, error) {
@@ -82,6 +84,7 @@ func (q *Queries) ListSources(ctx context.Context) ([]Source, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.Role,
+			&i.MaxActiveRuns,
 		); err != nil {
 			return nil, err
 		}
@@ -116,17 +119,19 @@ UPDATE sources
 SET name              = COALESCE($1, name),
     cost_per_1k_cents = COALESCE($2, cost_per_1k_cents),
     enabled           = COALESCE($3, enabled),
-    api_key_enc       = CASE WHEN $4::boolean THEN $5
+    max_active_runs   = COALESCE($4, max_active_runs),
+    api_key_enc       = CASE WHEN $5::boolean THEN $6
                              ELSE api_key_enc END,
     updated_at        = now()
-WHERE id = $6
-RETURNING id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role
+WHERE id = $7
+RETURNING id, kind, name, api_key_enc, cost_per_1k_cents, enabled, last_tested_at, last_test_ok, created_at, updated_at, role, max_active_runs
 `
 
 type UpdateSourceParams struct {
 	Name           *string
 	CostPer1kCents *int32
 	Enabled        *bool
+	MaxActiveRuns  *int32
 	SetKey         bool
 	ApiKeyEnc      []byte
 	ID             uuid.UUID
@@ -137,6 +142,7 @@ func (q *Queries) UpdateSource(ctx context.Context, arg UpdateSourceParams) (Sou
 		arg.Name,
 		arg.CostPer1kCents,
 		arg.Enabled,
+		arg.MaxActiveRuns,
 		arg.SetKey,
 		arg.ApiKeyEnc,
 		arg.ID,
@@ -154,6 +160,7 @@ func (q *Queries) UpdateSource(ctx context.Context, arg UpdateSourceParams) (Sou
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Role,
+		&i.MaxActiveRuns,
 	)
 	return i, err
 }

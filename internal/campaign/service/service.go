@@ -25,6 +25,7 @@ import (
 	"github.com/bory/karvon-be/internal/db"
 	"github.com/bory/karvon-be/internal/db/dbgen"
 	"github.com/bory/karvon-be/internal/queue"
+	"github.com/bory/karvon-be/internal/verify"
 )
 
 // Config bounds what the service does.
@@ -34,6 +35,11 @@ type Config struct {
 	PublicBaseURL string
 	MaxImport     int
 	LeadBatch     int
+	// EmailsPerMinute bounds calls to Instantly's GET /emails, which has its own
+	// limit (20 a minute) well below the rest of the API.
+	EmailsPerMinute float64
+	// InboxBackfillDays is how far back the first inbox sync reaches.
+	InboxBackfillDays int
 }
 
 // Page is one page of a list.
@@ -51,10 +57,15 @@ type Service struct {
 	instantly instantly.Factory
 	mailchimp mailchimp.Factory
 	ai        ai.Provider
-	queue     queue.Enqueuer
-	log       *slog.Logger
-	cfg       Config
-	now       func() time.Time
+	// chatgpt runs generations on a connected ChatGPT plan; nil when not configured.
+	chatgpt *chatGPT
+	queue   queue.Enqueuer
+	log     *slog.Logger
+	cfg     Config
+	now     func() time.Time
+	// emails spaces every GET /emails call in the process, the inbox sync's and
+	// a thread being opened alike, so together they stay under Instantly's limit.
+	emails *verify.RateLimiter
 }
 
 // NewService wires the service. queue may be nil at construction and set later with
@@ -71,9 +82,16 @@ func NewService(store *db.Store, cipher *crypto.Cipher, instantlyFactory instant
 	if cfg.LeadBatch <= 0 {
 		cfg.LeadBatch = 100
 	}
+	if cfg.EmailsPerMinute <= 0 {
+		cfg.EmailsPerMinute = 18
+	}
+	if cfg.InboxBackfillDays <= 0 {
+		cfg.InboxBackfillDays = 90
+	}
 	return &Service{
 		store: store, cipher: cipher, instantly: instantlyFactory, mailchimp: mailchimpFactory,
 		ai: aiProvider, queue: q, log: log, cfg: cfg, now: func() time.Time { return time.Now().UTC() },
+		emails: verify.NewRateLimiter(cfg.EmailsPerMinute / 60),
 	}
 }
 
@@ -85,6 +103,9 @@ func (s *Service) SetClock(now func() time.Time) { s.now = now }
 
 // Config exposes the service configuration.
 func (s *Service) Config() Config { return s.cfg }
+
+// EmailsLimiter is the limiter every GET /emails call waits on.
+func (s *Service) EmailsLimiter() *verify.RateLimiter { return s.emails }
 
 // AI exposes the configured generator.
 func (s *Service) AI() ai.Provider { return s.ai }

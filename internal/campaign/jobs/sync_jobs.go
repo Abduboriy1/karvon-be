@@ -94,7 +94,7 @@ func (w *SyncCampaignWorker) sync(ctx context.Context, client instantly.Client, 
 	}
 	if err := d.Store.SetCampaignProviderState(ctx, dbgen.SetCampaignProviderStateParams{
 		ID: camp.ID, InstantlyStatus: campaign.Ptr(campaign.Int32(remote.Status)), SendingStatus: sendingStatus,
-		NotSendingStatus: int32Ptr(remote.NotSendingStatus),
+		NotSendingStatus: int32Ptr(remote.NotSendingStatus), SyncedAt: campaign.Ptr(d.Now()),
 	}); err != nil {
 		return fmt.Errorf("store provider state: %w", err)
 	}
@@ -116,6 +116,13 @@ func (w *SyncCampaignWorker) sync(ctx context.Context, client instantly.Client, 
 		return err
 	}
 	if rows, err := client.CampaignAnalytics(ctx, []string{id}); err == nil && len(rows) > 0 {
+		if camp.Source == campaign.CampaignSourceInstantly {
+			if err := d.Store.SetImportedCampaignCounts(ctx, dbgen.SetImportedCampaignCountsParams{
+				ID: camp.ID, LeadsTotal: campaign.Int32(rows[0].LeadsCount),
+			}); err != nil {
+				return fmt.Errorf("store imported counts: %w", err)
+			}
+		}
 		metrics := map[string]any{}
 		raw, _ := json.Marshal(rows[0])
 		_ = json.Unmarshal(raw, &metrics)
@@ -129,6 +136,12 @@ func (w *SyncCampaignWorker) sync(ctx context.Context, client instantly.Client, 
 		}); err != nil {
 			return fmt.Errorf("store snapshot: %w", err)
 		}
+	}
+
+	// A campaign started in Instantly has no leads here to mirror onto: its
+	// numbers are the analytics snapshot above.
+	if camp.Source == campaign.CampaignSourceInstantly {
+		return nil
 	}
 
 	// Lead mirror: status, interest, counters, and events the webhook missed.
@@ -197,7 +210,7 @@ func (w *SyncCampaignWorker) mirrorLead(ctx context.Context, camp dbgen.Campaign
 	var interest *int32
 	if remote.InterestStatus != nil {
 		label = campaign.Ptr(instantly.InterestLabel(*remote.InterestStatus))
-		interest = campaign.Ptr(campaign.Int32(*remote.InterestStatus))
+		interest = campaign.Ptr(campaign.SignedInt32(*remote.InterestStatus))
 	}
 	changed := lead.Status != status || lead.InstantlyLeadID == nil || int(lead.OpenCount) < remote.OpenCount ||
 		int(lead.ReplyCount) < remote.ReplyCount || int(lead.ClickCount) < remote.ClickCount
@@ -290,7 +303,8 @@ func (w *SyncCampaignWorker) backfillSends(ctx context.Context, client instantly
 	cursor := ""
 	pages := 0
 	for pages < 50 {
-		if err := d.Limiter.Wait(ctx); err != nil {
+		// GET /emails has its own, much lower limit than the rest of the API.
+		if err := d.Service.EmailsLimiter().Wait(ctx); err != nil {
 			return err
 		}
 		page, err := client.ListEmails(ctx, instantly.ListEmailsInput{CampaignID: *camp.InstantlyCampaignID, EmailType: "sent", Limit: 100, StartingAfter: cursor, SortOrder: "desc"})
@@ -391,6 +405,13 @@ func NewSyncAllWorker(deps *Deps) *SyncAllWorker { return &SyncAllWorker{deps: d
 // Work implements river.Worker.
 func (w *SyncAllWorker) Work(ctx context.Context, _ *river.Job[campaign.SyncAllArgs]) error {
 	d := w.deps
+	if err := w.importCampaigns(ctx); err != nil {
+		if errors.Is(err, provider.ErrRateLimited) {
+			return snoozeFor(err)
+		}
+		// The import is best effort: the campaigns already known still sync.
+		d.Log.Warn("could not import campaigns from Instantly", "error", err)
+	}
 	rows, err := d.Store.ListCampaignsByStatus(ctx, []string{campaign.CampaignActive, campaign.CampaignPaused, campaign.CampaignLaunching})
 	if err != nil {
 		return fmt.Errorf("campaign jobs: list campaigns: %w", err)
@@ -405,6 +426,83 @@ func (w *SyncAllWorker) Work(ctx context.Context, _ *river.Job[campaign.SyncAllA
 	}
 	w.checkWebhook(ctx)
 	return nil
+}
+
+// importCampaigns brings in every campaign started in Instantly's own app, and
+// refreshes the name and status of the ones imported before, so the campaign list
+// shows the whole workspace. Campaigns Karvon launched are matched by their
+// Instantly id and left to their own sync.
+func (w *SyncAllWorker) importCampaigns(ctx context.Context) error {
+	d := w.deps
+	client, err := d.Service.Instantly(ctx)
+	if err != nil {
+		return nil //nolint:nilerr // Instantly is not configured; there is nothing to import.
+	}
+	run, err := d.startSync(ctx, campaign.SyncKindInstantlyCampaignsAll, nil)
+	if err != nil {
+		return err
+	}
+	imported := 0
+	importErr := func() error {
+		cursor := ""
+		for {
+			if err := d.Limiter.Wait(ctx); err != nil {
+				return err
+			}
+			page, err := client.ListCampaigns(ctx, cursor)
+			if err != nil {
+				return fmt.Errorf("list campaigns: %w", err)
+			}
+			for _, remote := range page.Items {
+				if remote.ID == "" {
+					continue
+				}
+				run.seen++
+				row, err := d.Store.UpsertInstantlyCampaign(ctx, importParams(remote))
+				if errors.Is(err, pgx.ErrNoRows) {
+					continue // launched from Karvon; its own sync owns it
+				}
+				if err != nil {
+					return fmt.Errorf("import campaign %s: %w", remote.ID, err)
+				}
+				if row.Inserted {
+					imported++
+					run.updated++
+				}
+			}
+			if page.NextStartingAfter == "" || len(page.Items) == 0 {
+				return nil
+			}
+			cursor = page.NextStartingAfter
+		}
+	}()
+	run.details["imported"] = imported
+	run.finish(ctx, importErr)
+	return importErr
+}
+
+// importParams maps an Instantly campaign onto the columns an import fills.
+func importParams(remote instantly.Campaign) dbgen.UpsertInstantlyCampaignParams {
+	name := strings.TrimSpace(remote.Name)
+	if name == "" {
+		name = "Untitled Instantly campaign"
+	}
+	if runes := []rune(name); len(runes) > 200 {
+		name = string(runes[:200])
+	}
+	steps := 1
+	if len(remote.Sequences) > 0 {
+		steps = min(max(len(remote.Sequences[0].Steps), 1), campaign.MaxSteps)
+	}
+	created := remote.TimestampCreated
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	return dbgen.UpsertInstantlyCampaignParams{
+		ID: newID(), Name: name, Status: instantly.CampaignStatus(remote.Status), Steps: campaign.Int32(steps),
+		InstantlyCampaignID: campaign.Ptr(remote.ID), InstantlyStatus: campaign.Ptr(campaign.SignedInt32(remote.Status)),
+		CreatedAt: created,
+	}
 }
 
 // checkWebhook mirrors the webhook's status and resumes it if Instantly disabled it.

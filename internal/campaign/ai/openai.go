@@ -98,6 +98,10 @@ type responsesRequest struct {
 	Input           string        `json:"input"`
 	Text            responsesText `json:"text"`
 	MaxOutputTokens int           `json:"max_output_tokens,omitempty"`
+	// Store and Stream are only sent by the ChatGPT plan provider, which must
+	// set store=false and stream=true.
+	Store  *bool `json:"store,omitempty"`
+	Stream bool  `json:"stream,omitempty"`
 }
 
 type responsesText struct {
@@ -133,6 +137,7 @@ type responsesResponse struct {
 type openAIError struct {
 	Message string `json:"message"`
 	Type    string `json:"type"`
+	Code    string `json:"code"`
 }
 
 // errorEnvelope is the body of a non-2xx answer.
@@ -167,13 +172,27 @@ func (p *OpenAIAPIProvider) Generate(ctx context.Context, brief Brief) (Output, 
 		return Output{}, Usage{}, err
 	}
 
+	out, usage, err := readOutput("openai", resp, p.cfg.Model)
+	if err != nil {
+		return Output{}, usage, err
+	}
+	p.log.Debug("generated cold-email content",
+		"provider", campaign.AIProviderOpenAI, "model", usage.Model,
+		"components", len(out.Components), "variants", len(out.Variants),
+		"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
+	return out, usage, nil
+}
+
+// readOutput turns a finished Responses object into parsed output. Usage is
+// returned even when the reply fails to parse, so spent tokens are still recorded.
+func readOutput(name string, resp responsesResponse, fallbackModel string) (Output, Usage, error) {
 	usage := Usage{
 		Model:        resp.Model,
 		InputTokens:  resp.Usage.InputTokens,
 		OutputTokens: resp.Usage.OutputTokens,
 	}
 	if usage.Model == "" {
-		usage.Model = p.cfg.Model
+		usage.Model = fallbackModel
 	}
 
 	var text strings.Builder
@@ -191,17 +210,13 @@ func (p *OpenAIAPIProvider) Generate(ctx context.Context, brief Brief) (Output, 
 		}
 	}
 	if text.Len() == 0 {
-		return Output{}, usage, fmt.Errorf("ai: openai: response %s (%s) carried no text", resp.ID, resp.Status)
+		return Output{}, usage, fmt.Errorf("ai: %s: response %s (%s) carried no text", name, resp.ID, resp.Status)
 	}
 
 	out, err := ParseOutput(text.String())
 	if err != nil {
 		return Output{}, usage, err
 	}
-	p.log.Debug("generated cold-email content",
-		"provider", campaign.AIProviderOpenAI, "model", usage.Model,
-		"components", len(out.Components), "variants", len(out.Variants),
-		"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens)
 	return out, usage, nil
 }
 

@@ -124,6 +124,7 @@ func toAPICampaign(row db.CampaignRow) gen.Campaign {
 		Id:                     row.ID,
 		Name:                   row.Name,
 		Status:                 gen.CampaignStatus(row.Status),
+		Source:                 gen.CampaignSource(row.Source),
 		Brief:                  decodeJSONObject(row.Brief),
 		Schedule:               decodeJSONObject(row.Schedule),
 		Settings:               decodeJSONObject(row.Settings),
@@ -173,6 +174,7 @@ func toAPICampaignDetail(detail campaignsvc.CampaignDetail) gen.CampaignDetail {
 		Id:                     row.ID,
 		Name:                   row.Name,
 		Status:                 gen.CampaignStatus(row.Status),
+		Source:                 gen.CampaignSource(row.Source),
 		Brief:                  decodeJSONObject(row.Brief),
 		Schedule:               decodeJSONObject(row.Schedule),
 		Settings:               decodeJSONObject(row.Settings),
@@ -1005,12 +1007,21 @@ func toAPIProviderTestResult(in campaignsvc.TestResult) gen.ProviderTestResult {
 /* -------------------------------------------------------------------- AI */
 
 func toAPIAIProvider(in campaignsvc.AIProviderInfo) gen.AIProvider {
-	return gen.AIProvider{
+	out := gen.AIProvider{
 		Provider: gen.AIProviderName(in.Provider),
 		Mode:     gen.AIMode(in.Mode),
 		Model:    optString(in.Model),
 		Label:    in.Label,
 	}
+	if in.ChatGPT != nil {
+		out.Chatgpt = &gen.ChatGPTConnection{
+			Status:      gen.ChatGPTConnectionStatus(in.ChatGPT.Status),
+			Email:       in.ChatGPT.Email,
+			ConnectedAt: in.ChatGPT.ConnectedAt,
+			LastError:   in.ChatGPT.LastError,
+		}
+	}
+	return out
 }
 
 func toAPIAIBrief(in ai.Brief) gen.AIBrief {

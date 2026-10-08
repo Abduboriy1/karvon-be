@@ -41,10 +41,12 @@ const (
 // Kinds lists every rule kind the schema accepts.
 var Kinds = []string{KindCompany, KindEmail, KindEmailDomain, KindDomain}
 
-// Match modes. Prefix is for company rules only.
+// Match modes. Prefix is for company rules only; contains is for company and the
+// two domain kinds.
 const (
-	MatchExact  = "exact"
-	MatchPrefix = "prefix"
+	MatchExact    = "exact"
+	MatchPrefix   = "prefix"
+	MatchContains = "contains"
 )
 
 // Sources record where a rule was created from.
@@ -65,6 +67,10 @@ const (
 	MaxReasonLen = 1000
 	// minCompanyKeyLen keeps a stray "a" or "co" from excluding half the list.
 	minCompanyKeyLen = 3
+	// minFragmentLen is the shortest text a contains rule on a domain may hold.
+	minFragmentLen = 3
+	// shortFragmentLen is the length under which a contains rule draws a warning.
+	shortFragmentLen = 4
 	// broadRuleThreshold is how many businesses a rule may cover before the
 	// preview warns that it looks broader than intended.
 	broadRuleThreshold = 250
@@ -78,6 +84,13 @@ var freeMailDomains = map[string]struct{}{
 	"mac.com": {}, "protonmail.com": {}, "proton.me": {}, "gmx.com": {}, "mail.com": {},
 	"zoho.com": {}, "yandex.com": {}, "comcast.net": {}, "att.net": {}, "sbcglobal.net": {},
 	"verizon.net": {}, "bellsouth.net": {}, "cox.net": {}, "charter.net": {},
+}
+
+// tldFragments are top-level domains a contains rule may not be: every host
+// carries one, so the rule would exclude nearly everything.
+var tldFragments = map[string]struct{}{
+	"com": {}, "net": {}, "org": {}, "edu": {}, "gov": {}, "mil": {}, "int": {}, "info": {},
+	"biz": {}, "io": {}, "co": {}, "us": {}, "uk": {}, "ca": {},
 }
 
 // Enqueuer is the queue surface the service needs.
@@ -303,10 +316,12 @@ func (s *Service) normalize(ctx context.Context, in Input) (dbgen.CreateGlobalEx
 		mode = MatchExact
 	}
 	switch {
-	case mode != MatchExact && mode != MatchPrefix:
-		fields = append(fields, apperr.FieldError{Field: "match_mode", Message: "must be exact or prefix"})
+	case mode != MatchExact && mode != MatchPrefix && mode != MatchContains:
+		fields = append(fields, apperr.FieldError{Field: "match_mode", Message: "must be exact, prefix or contains"})
 	case mode == MatchPrefix && in.Kind != KindCompany:
 		fields = append(fields, apperr.FieldError{Field: "match_mode", Message: "prefix matching applies to company rules only"})
+	case mode == MatchContains && in.Kind == KindEmail:
+		fields = append(fields, apperr.FieldError{Field: "match_mode", Message: "contains matching applies to company and domain rules only"})
 	}
 	source := in.Source
 	if source == "" {
@@ -328,7 +343,7 @@ func (s *Service) normalize(ctx context.Context, in Input) (dbgen.CreateGlobalEx
 		return dbgen.CreateGlobalExclusionParams{}, apperr.Validation("exclusion is invalid", fields...)
 	}
 
-	value, err := s.matchKey(ctx, in.Kind, display)
+	value, err := s.matchKey(ctx, in.Kind, mode, display)
 	if err != nil {
 		return dbgen.CreateGlobalExclusionParams{}, err
 	}
@@ -343,9 +358,16 @@ func (s *Service) normalize(ctx context.Context, in Input) (dbgen.CreateGlobalEx
 }
 
 // matchKey reduces a value to the form the views compare against.
-func (s *Service) matchKey(ctx context.Context, kind, display string) (string, error) {
+func (s *Service) matchKey(ctx context.Context, kind, mode, display string) (string, error) {
 	invalid := func(msg string) error {
 		return apperr.Validation("exclusion is invalid", apperr.FieldError{Field: "value", Message: msg})
+	}
+	if mode == MatchContains && kind != KindCompany {
+		fragment, msg := domainFragment(display)
+		if msg != "" {
+			return "", invalid(msg)
+		}
+		return fragment, nil
 	}
 	switch kind {
 	case KindEmail:
@@ -390,6 +412,35 @@ func domainOf(raw string) string {
 	return strings.TrimSuffix(host, ".")
 }
 
+// domainFragment reduces the text of a domain contains rule to its match key: lower
+// case, without a scheme, path, "www." or the part of an address before "@". It
+// returns a message instead when the text cannot be used.
+func domainFragment(raw string) (string, string) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	if i := strings.LastIndex(v, "@"); i >= 0 {
+		v = v[i+1:]
+	}
+	if i := strings.Index(v, "://"); i >= 0 {
+		v = v[i+3:]
+	}
+	if i := strings.IndexAny(v, "/?#:"); i >= 0 {
+		v = v[:i]
+	}
+	v = strings.TrimPrefix(v, "www.")
+	for _, r := range v {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '.' && r != '-' {
+			return "", "may contain only letters, digits, dots and hyphens"
+		}
+	}
+	if len(v) < minFragmentLen {
+		return "", fmt.Sprintf("must be at least %d characters to match reliably", minFragmentLen)
+	}
+	if _, ok := tldFragments[strings.Trim(v, ".")]; ok || strings.HasPrefix(v, ".") {
+		return "", fmt.Sprintf("%q matches a top-level domain, which every site carries", v)
+	}
+	return v, ""
+}
+
 func (s *Service) withCounts(ctx context.Context, rows []dbgen.GlobalExclusion) ([]Rule, error) {
 	active := make([]uuid.UUID, 0, len(rows))
 	for _, r := range rows {
@@ -428,6 +479,9 @@ func warningFor(params dbgen.CreateGlobalExclusionParams, affected db.ExclusionA
 		msg = fmt.Sprintf("This rule covers %d businesses. Check the samples before saving.", affected.Businesses)
 	case params.Kind == KindCompany && params.MatchMode == MatchPrefix && !strings.Contains(params.Value, " "):
 		msg = "A one-word prefix can match unrelated businesses that start with the same word."
+	case params.MatchMode == MatchContains && len(params.Value) < shortFragmentLen:
+		msg = fmt.Sprintf("%q is short: it can match unrelated businesses that happen to contain it. "+
+			"Check the samples before saving.", params.Value)
 	default:
 		return nil
 	}

@@ -14,7 +14,8 @@ import (
 )
 
 // This file is the only Go code that knows how a global exclusion is matched. The
-// matching itself lives in two views (migrations/00012_global_exclusions.sql):
+// matching itself lives in two views (migrations/00012_global_exclusions.sql, restated
+// by 00020_exclusion_contains.sql):
 //
 //	global_excluded_businesses (business_id, exclusion_id)
 //	global_excluded_addresses  (email, exclusion_id)
@@ -150,8 +151,10 @@ func (s *Store) MatchEmail(ctx context.Context, email string) (*ExclusionRef, er
 		SELECT `+matchColumns+` FROM global_exclusions ge
 		WHERE ge.removed_at IS NULL
 		  AND ((ge.kind = 'email' AND ge.value = lower(btrim($1)))
-		    OR (ge.kind IN ('email_domain', 'domain')
-		        AND ge.value = ANY (exclusion_domain_suffixes(split_part(lower(btrim($1)), '@', 2)))))
+		    OR (ge.kind IN ('email_domain', 'domain') AND ge.match_mode = 'exact'
+		        AND ge.value = ANY (exclusion_domain_suffixes(split_part(lower(btrim($1)), '@', 2))))
+		    OR (ge.kind IN ('email_domain', 'domain') AND ge.match_mode = 'contains'
+		        AND exclusion_host(split_part(lower(btrim($1)), '@', 2)) LIKE '%' || ge.value || '%'))
 		UNION ALL
 		SELECT `+matchColumns+` FROM global_excluded_addresses x
 		JOIN global_exclusions ge ON ge.id = x.exclusion_id
@@ -175,7 +178,10 @@ func (s *Store) MatchDomain(ctx context.Context, host string) (*ExclusionRef, er
 	return s.matchOne(ctx, `
 		SELECT `+matchColumns+` FROM global_exclusions ge
 		WHERE ge.removed_at IS NULL AND ge.kind IN ('domain', 'email_domain')
-		  AND ge.value = ANY (exclusion_domain_suffixes($1))
+		  AND CASE ge.match_mode
+		        WHEN 'contains' THEN exclusion_host($1) LIKE '%' || ge.value || '%'
+		        ELSE ge.value = ANY (exclusion_domain_suffixes($1))
+		      END
 		ORDER BY ge.created_at, ge.id LIMIT 1`, host)
 }
 
@@ -184,8 +190,11 @@ func (s *Store) MatchCompany(ctx context.Context, name string) (*ExclusionRef, e
 	return s.matchOne(ctx, `
 		SELECT `+matchColumns+` FROM global_exclusions ge
 		WHERE ge.removed_at IS NULL AND ge.kind = 'company'
-		  AND ge.value = ANY (exclusion_name_prefixes(exclusion_company_key($1)))
-		  AND (ge.match_mode = 'prefix' OR ge.value = exclusion_company_key($1))
+		  AND CASE ge.match_mode
+		        WHEN 'contains' THEN ' ' || exclusion_company_key($1) || ' ' LIKE '% ' || ge.value || ' %'
+		        WHEN 'prefix' THEN ge.value = ANY (exclusion_name_prefixes(exclusion_company_key($1)))
+		        ELSE ge.value = exclusion_company_key($1)
+		      END
 		ORDER BY ge.created_at, ge.id LIMIT 1`, name)
 }
 

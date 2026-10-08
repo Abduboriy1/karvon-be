@@ -200,6 +200,13 @@ type stubExclusions struct {
 	lastFilter  db.ExclusionFilter
 	lastSubject exclusion.Subject
 	lastNote    string
+
+	scan          exclusion.BrandScanPage
+	bulk          []exclusion.BulkResult
+	dismissal     dbgen.BrandScanDismissal
+	lastScan      exclusion.BrandScanInput
+	lastBulk      []exclusion.Input
+	lastDismissal exclusion.DismissalInput
 }
 
 func (s *stubExclusions) List(_ context.Context, f db.ExclusionFilter, _ string, _, _ int) (exclusion.Page, error) {
@@ -224,6 +231,22 @@ func (s *stubExclusions) Remove(_ context.Context, _ uuid.UUID, note string) err
 func (s *stubExclusions) Check(_ context.Context, subject exclusion.Subject) (*db.ExclusionRef, error) {
 	s.lastSubject = subject
 	return s.match, s.err
+}
+func (s *stubExclusions) CreateBulk(_ context.Context, in []exclusion.Input) ([]exclusion.BulkResult, error) {
+	s.lastBulk = in
+	return s.bulk, s.err
+}
+func (s *stubExclusions) BrandScan(_ context.Context, in exclusion.BrandScanInput) (exclusion.BrandScanPage, error) {
+	s.lastScan = in
+	return s.scan, s.err
+}
+func (s *stubExclusions) Dismiss(_ context.Context, in exclusion.DismissalInput) (dbgen.BrandScanDismissal, error) {
+	s.lastDismissal = in
+	return s.dismissal, s.err
+}
+func (s *stubExclusions) Undismiss(context.Context, uuid.UUID) error { return s.err }
+func (s *stubExclusions) ListDismissals(context.Context, *string, int, int) (exclusion.DismissalPage, error) {
+	return exclusion.DismissalPage{Rows: []dbgen.BrandScanDismissal{s.dismissal}, Total: 1}, s.err
 }
 
 // stubVerification answers the /verification endpoints with canned results.
@@ -319,11 +342,27 @@ func (s *stubVerification) CancelRun(_ context.Context, id uuid.UUID) (dbgen.Ver
 }
 
 type stubStats struct {
-	value stats.Scraper
-	err   error
+	value  stats.Scraper
+	report stats.Report
+	input  stats.ReportInput
+	err    error
 }
 
 func (s *stubStats) Scraper(context.Context) (stats.Scraper, error) { return s.value, s.err }
+
+func (s *stubStats) Report(_ context.Context, in stats.ReportInput) (stats.Report, error) {
+	s.input = in
+	if s.err != nil {
+		return stats.Report{}, s.err
+	}
+	rng, err := stats.ResolveRange(in, time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		return stats.Report{}, err
+	}
+	out := s.report
+	out.Range = rng
+	return out, nil
+}
 
 // stubEvents serves stored events to the SSE handler without a database.
 type stubEvents struct {

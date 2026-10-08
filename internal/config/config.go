@@ -81,14 +81,12 @@ type Config struct {
 	// and drained rather than awaited, and these settings bound what it may spend
 	// and how much of the vendor account it may occupy.
 	//
-	// ProviderMaxActiveRuns is the one to tune first. It caps how many runs a vendor
-	// account has in flight, which queue concurrency cannot do: a worker polling a
-	// run gives its slot back between polls. Six 8 GB runs fit inside a 64 GB Apify
-	// account with headroom; raise it with the plan, not past it.
-	ProviderMaxActiveRuns int           `env:"PROVIDER_MAX_ACTIVE_RUNS" envDefault:"6"`
-	ProviderPollInterval  time.Duration `env:"PROVIDER_POLL_INTERVAL" envDefault:"1m"`
-	ProviderMaxRunTime    time.Duration `env:"PROVIDER_MAX_RUN_TIME" envDefault:"12h"`
-	ProviderPageSize      int           `env:"PROVIDER_PAGE_SIZE" envDefault:"1000"`
+	// How many runs a vendor account may have in flight is not here: it is the
+	// source's max_active_runs, set on the Sources page, because it follows the
+	// vendor plan and should change without a restart.
+	ProviderPollInterval time.Duration `env:"PROVIDER_POLL_INTERVAL" envDefault:"1m"`
+	ProviderMaxRunTime   time.Duration `env:"PROVIDER_MAX_RUN_TIME" envDefault:"12h"`
+	ProviderPageSize     int           `env:"PROVIDER_PAGE_SIZE" envDefault:"1000"`
 
 	// Apify run settings. Memory buys speed, not results: the bill is per place.
 	ApifyRunMemoryMB int `env:"APIFY_RUN_MEMORY_MB" envDefault:"8192"`
@@ -167,6 +165,10 @@ type Config struct {
 	VerifyReacherFromEmail string `env:"VERIFY_REACHER_FROM_EMAIL"`
 	// VerifyMaxRunEmails bounds one bulk run.
 	VerifyMaxRunEmails int `env:"VERIFY_MAX_RUN_EMAILS" envDefault:"50000"`
+	// VerifyAutoInterval is how often the automatic self-verify sweep looks for
+	// addresses that have never been scored. It only starts a run when the
+	// verification settings have auto_self_verify on and no self run is in flight.
+	VerifyAutoInterval time.Duration `env:"VERIFY_AUTO_INTERVAL" envDefault:"2m"`
 	// VerifyRoleSoftMode decides what a shared mailbox such as info@ costs:
 	// "hard" scores it 0, "penalty" caps it at 60 and keeps it eligible.
 	VerifyRoleSoftMode string `env:"VERIFY_ROLE_SOFT_MODE" envDefault:"hard"`
@@ -199,6 +201,9 @@ type Config struct {
 	InstantlyRPS          float64       `env:"INSTANTLY_RPS" envDefault:"5"`
 	InstantlyLeadBatch    int           `env:"INSTANTLY_LEAD_BATCH" envDefault:"100"`
 	InstantlyLeadBatchGap time.Duration `env:"INSTANTLY_LEAD_BATCH_GAP" envDefault:"2s"`
+	// InstantlyEmailsPerMinute paces GET /emails, which Instantly limits to 20 a
+	// minute on its own, apart from INSTANTLY_RPS.
+	InstantlyEmailsPerMinute float64 `env:"INSTANTLY_EMAILS_PER_MINUTE" envDefault:"18"`
 
 	MailchimpBaseURL          string        `env:"MAILCHIMP_BASE_URL" envDefault:"https://{dc}.api.mailchimp.com/3.0"`
 	MailchimpTimeout          time.Duration `env:"MAILCHIMP_TIMEOUT" envDefault:"30s"`
@@ -212,6 +217,24 @@ type Config struct {
 	OpenAIBaseURL string        `env:"OPENAI_BASE_URL" envDefault:"https://api.openai.com/v1"`
 	OpenAITimeout time.Duration `env:"OPENAI_TIMEOUT" envDefault:"120s"`
 
+	// ChatGPTClientID turns on Sign in with ChatGPT: the operator connects their
+	// ChatGPT account and generations run against its Plus or Pro plan, using
+	// OPENAI_BASE_URL and OPENAI_TIMEOUT. OpenAI issues the client id; a hosted app
+	// has to apply for one. While no account is connected the generator falls back
+	// to the API key, or to the manual flow.
+	ChatGPTClientID     string `env:"CHATGPT_CLIENT_ID"`
+	ChatGPTClientSecret string `env:"CHATGPT_CLIENT_SECRET"`
+	ChatGPTModel        string `env:"CHATGPT_MODEL" envDefault:"gpt-5.6-terra"`
+	// ChatGPTRedirectURL is the callback registered with OpenAI. Empty derives it
+	// from PUBLIC_BASE_URL.
+	ChatGPTRedirectURL string `env:"CHATGPT_REDIRECT_URL"`
+	// ChatGPTReturnURL is the dashboard page the browser lands on after signing in.
+	// Empty uses CORS_ORIGIN.
+	ChatGPTReturnURL    string `env:"CHATGPT_RETURN_URL"`
+	ChatGPTIssuer       string `env:"CHATGPT_ISSUER" envDefault:"https://auth.openai.com"`
+	ChatGPTAuthorizeURL string `env:"CHATGPT_AUTHORIZE_URL" envDefault:"https://auth.openai.com/api/accounts/authorize"`
+	ChatGPTTokenURL     string `env:"CHATGPT_TOKEN_URL" envDefault:"https://auth.openai.com/api/accounts/oauth/token"`
+
 	CampaignSyncInterval          time.Duration `env:"CAMPAIGN_SYNC_INTERVAL" envDefault:"15m"`
 	CampaignAccountsSyncInterval  time.Duration `env:"CAMPAIGN_ACCOUNTS_SYNC_INTERVAL" envDefault:"6h"`
 	CampaignWebhookReplayInterval time.Duration `env:"CAMPAIGN_WEBHOOK_REPLAY_INTERVAL" envDefault:"30m"`
@@ -221,6 +244,12 @@ type Config struct {
 	CampaignEventConcurrency      int           `env:"CAMPAIGN_EVENT_CONCURRENCY" envDefault:"4"`
 	CampaignMaxImport             int           `env:"CAMPAIGN_MAX_IMPORT" envDefault:"50000"`
 	WebhookMaxBodyBytes           int64         `env:"WEBHOOK_MAX_BODY_BYTES" envDefault:"1048576"`
+
+	// InboxSyncInterval is the periodic inbox pass; each reply webhook also queues
+	// one, so this only matters for replies a webhook never reported.
+	InboxSyncInterval time.Duration `env:"INBOX_SYNC_INTERVAL" envDefault:"5m"`
+	// InboxBackfillDays is how far back the first inbox sync reaches.
+	InboxBackfillDays int `env:"INBOX_BACKFILL_DAYS" envDefault:"90"`
 
 	// Domains module. The Cloudflare API token and account ID live in the database
 	// (Settings → Domains); everything here is wiring.
@@ -254,6 +283,13 @@ type Config struct {
 	SSEPingInterval    time.Duration `env:"SSE_PING_INTERVAL" envDefault:"15s"`
 
 	MaxQueriesPerJob int `env:"MAX_QUERIES_PER_JOB" envDefault:"500"`
+
+	// Recurring costs no table records, priced into the client report's cost per
+	// successful lead: each provisioned Workspace mailbox per month, and the flat
+	// monthly tooling bill (Instantly plan, Mailchimp plan and the like). Both are
+	// prorated by the day; 0 leaves them out.
+	ReportMailboxMonthlyCents int64 `env:"REPORT_MAILBOX_MONTHLY_CENTS" envDefault:"0"`
+	ReportFixedMonthlyCents   int64 `env:"REPORT_FIXED_MONTHLY_CENTS" envDefault:"0"`
 }
 
 // IsProduction reports whether the service runs with production defaults.
@@ -319,9 +355,6 @@ func (c Config) Validate() error {
 	}
 	if c.MaxQueriesPerJob < 1 {
 		errs = append(errs, errors.New(EnvPrefix+"MAX_QUERIES_PER_JOB must be positive"))
-	}
-	if c.ProviderMaxActiveRuns < 1 || c.ProviderMaxActiveRuns > 64 {
-		errs = append(errs, errors.New(EnvPrefix+"PROVIDER_MAX_ACTIVE_RUNS must be between 1 and 64"))
 	}
 	if c.ProviderPollInterval < time.Second {
 		errs = append(errs, errors.New(EnvPrefix+"PROVIDER_POLL_INTERVAL must be at least 1s"))
@@ -402,6 +435,9 @@ func (c Config) Validate() error {
 	if c.VerifyRDAPCacheDays < 1 || c.VerifyRDAPCacheDays > 3650 {
 		errs = append(errs, errors.New(EnvPrefix+"VERIFY_RDAP_CACHE_DAYS must be between 1 and 3650"))
 	}
+	if c.VerifyAutoInterval < time.Second {
+		errs = append(errs, errors.New(EnvPrefix+"VERIFY_AUTO_INTERVAL must be at least 1s"))
+	}
 	if c.VerifyMaxRunEmails < 1 {
 		errs = append(errs, errors.New(EnvPrefix+"VERIFY_MAX_RUN_EMAILS must be positive"))
 	}
@@ -415,6 +451,15 @@ func (c Config) Validate() error {
 	}
 	if c.InstantlyRPS <= 0 || c.InstantlyRPS > 100 {
 		errs = append(errs, errors.New(EnvPrefix+"INSTANTLY_RPS must be between 0 and 100"))
+	}
+	if c.InstantlyEmailsPerMinute <= 0 || c.InstantlyEmailsPerMinute > 20 {
+		errs = append(errs, errors.New(EnvPrefix+"INSTANTLY_EMAILS_PER_MINUTE must be between 0 and 20, Instantly's own limit"))
+	}
+	if c.InboxSyncInterval < time.Minute {
+		errs = append(errs, errors.New(EnvPrefix+"INBOX_SYNC_INTERVAL must be at least 1m"))
+	}
+	if c.InboxBackfillDays < 1 || c.InboxBackfillDays > 3650 {
+		errs = append(errs, errors.New(EnvPrefix+"INBOX_BACKFILL_DAYS must be between 1 and 3650"))
 	}
 	if c.InstantlyLeadBatch < 1 || c.InstantlyLeadBatch > 1000 {
 		errs = append(errs, errors.New(EnvPrefix+"INSTANTLY_LEAD_BATCH must be between 1 and 1000"))
@@ -470,7 +515,43 @@ func (c Config) Validate() error {
 	if c.OpenAIAPIKey != "" && strings.TrimSpace(c.OpenAIModel) == "" {
 		errs = append(errs, errors.New(EnvPrefix+"OPENAI_MODEL is required when "+EnvPrefix+"OPENAI_API_KEY is set"))
 	}
+	if c.ChatGPTClientID != "" {
+		if strings.TrimSpace(c.ChatGPTModel) == "" {
+			errs = append(errs, errors.New(EnvPrefix+"CHATGPT_MODEL is required when "+EnvPrefix+"CHATGPT_CLIENT_ID is set"))
+		}
+		if c.ChatGPTCallbackURL() == "" {
+			errs = append(errs, errors.New(EnvPrefix+"CHATGPT_REDIRECT_URL or "+EnvPrefix+"PUBLIC_BASE_URL is required when "+EnvPrefix+"CHATGPT_CLIENT_ID is set"))
+		}
+		for name, v := range map[string]string{"CHATGPT_REDIRECT_URL": c.ChatGPTRedirectURL, "CHATGPT_RETURN_URL": c.ChatGPTReturnURL} {
+			if v != "" && !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+				errs = append(errs, errors.New(EnvPrefix+name+" must be an http(s) URL"))
+			}
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// ChatGPTCallbackPath is where OpenAI sends the browser back after sign-in.
+const ChatGPTCallbackPath = "/api/v1/ai/chatgpt/callback"
+
+// ChatGPTCallbackURL is the redirect URI registered with OpenAI.
+func (c Config) ChatGPTCallbackURL() string {
+	if c.ChatGPTRedirectURL != "" {
+		return c.ChatGPTRedirectURL
+	}
+	if c.PublicBaseURL == "" {
+		return ""
+	}
+	return strings.TrimSuffix(c.PublicBaseURL, "/") + ChatGPTCallbackPath
+}
+
+// ChatGPTLandingURL is the dashboard page the browser is sent to after sign-in.
+func (c Config) ChatGPTLandingURL() string {
+	if c.ChatGPTReturnURL != "" {
+		return c.ChatGPTReturnURL
+	}
+	origin, _, _ := strings.Cut(c.CORSOrigin, ",")
+	return strings.TrimSpace(origin)
 }
 
 // isPlaceholderSecret catches the all-zero key shipped in .env.example and

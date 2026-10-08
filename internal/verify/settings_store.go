@@ -114,11 +114,12 @@ func (s *SettingsStore) Save(ctx context.Context, settings Settings) (Settings, 
 	}
 
 	row, err := s.store.UpsertVerificationSettings(ctx, dbgen.UpsertVerificationSettingsParams{
-		Weights:       weights,
-		Enabled:       enabled,
-		PaidEnabled:   settings.PaidEnabled,
-		PaidThreshold: int32(settings.PaidThreshold), //nolint:gosec // G115: validated 0-100
-		PaidMinScore:  int32(settings.PaidMinScore),  //nolint:gosec // G115: validated 0-100
+		Weights:        weights,
+		Enabled:        enabled,
+		PaidEnabled:    settings.PaidEnabled,
+		PaidThreshold:  int32(settings.PaidThreshold), //nolint:gosec // G115: validated 0-100
+		PaidMinScore:   int32(settings.PaidMinScore),  //nolint:gosec // G115: validated 0-100
+		AutoSelfVerify: settings.AutoSelfVerify,
 	})
 	if err != nil {
 		return Settings{}, apperr.Internal(fmt.Errorf("verify: save settings: %w", err))
@@ -131,7 +132,8 @@ func (s *SettingsStore) Save(ctx context.Context, settings Settings) (Settings, 
 	s.cache(saved)
 	s.log.Info("verification settings updated",
 		"weights", saved.Weights, "paid_enabled", saved.PaidEnabled,
-		"paid_min_score", saved.PaidMinScore, "paid_threshold", saved.PaidThreshold)
+		"paid_min_score", saved.PaidMinScore, "paid_threshold", saved.PaidThreshold,
+		"auto_self_verify", saved.AutoSelfVerify)
 	return saved.Clone(), nil
 }
 
@@ -155,11 +157,12 @@ func (s *SettingsStore) cache(settings Settings) {
 // readable, which is the point of storing weights as an object rather than columns.
 func settingsFromRow(row dbgen.VerificationSetting, defaults Settings) (Settings, error) {
 	out := Settings{
-		Weights:       map[Key]int{},
-		Enabled:       map[Key]bool{},
-		PaidEnabled:   row.PaidEnabled,
-		PaidThreshold: int(row.PaidThreshold),
-		PaidMinScore:  int(row.PaidMinScore),
+		Weights:        map[Key]int{},
+		Enabled:        map[Key]bool{},
+		PaidEnabled:    row.PaidEnabled,
+		PaidThreshold:  int(row.PaidThreshold),
+		PaidMinScore:   int(row.PaidMinScore),
+		AutoSelfVerify: row.AutoSelfVerify,
 	}
 	if len(row.Weights) > 0 {
 		if err := json.Unmarshal(row.Weights, &out.Weights); err != nil {

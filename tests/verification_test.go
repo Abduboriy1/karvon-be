@@ -66,7 +66,8 @@ type settingsViewPayload struct {
 		Enabled       map[string]bool `json:"enabled"`
 		PaidEnabled   bool            `json:"paid_enabled"`
 		PaidThreshold int             `json:"paid_threshold"`
-		PaidMinScore  int             `json:"paid_min_score"`
+		PaidMinScore   int             `json:"paid_min_score"`
+		AutoSelfVerify bool            `json:"auto_self_verify"`
 	} `json:"settings"`
 	Providers []struct {
 		Provider    string `json:"provider"`
@@ -102,6 +103,7 @@ type runPayload struct {
 	CreditsUsed  int    `json:"credits_used"`
 	EstCostCents int64  `json:"est_cost_cents"`
 	Error        string `json:"error"`
+	Auto         bool   `json:"auto"`
 }
 
 type estimatePayload struct {
@@ -138,7 +140,16 @@ type verificationStatsPayload struct {
 // verificationHarness seeds a scrape whose crawled pages hand us a deliberate mix:
 // a clean personal address, a shared info@ mailbox, and a misspelled free-provider
 // domain. Those three drive nearly every rule in the two passes.
-func verificationHarness(t *testing.T) *harness {
+func verificationHarness(t *testing.T, options ...harnessOption) *harness {
+	t.Helper()
+	h := bareVerificationHarness(t, options...)
+	h.seedVerificationJob()
+	return h
+}
+
+// bareVerificationHarness is verificationHarness before the seed scrape, for a test
+// that has to change a setting before any address exists.
+func bareVerificationHarness(t *testing.T, options ...harnessOption) *harness {
 	t.Helper()
 
 	pages := map[string]string{
@@ -146,7 +157,7 @@ func verificationHarness(t *testing.T) *harness {
 		"austinbarbell.com/": `<html><body><p>info@austinbarbell.com</p></body></html>`,
 		"dallasiron.com/":    `<html><body><p>owner@gmial.com</p></body></html>`,
 	}
-	h := newHarness(t, pages)
+	h := newHarness(t, pages, options...)
 
 	// Only the two real business domains resolve; the typo'd one does not, which is
 	// exactly the situation the suggestion has to survive.
@@ -162,15 +173,20 @@ func verificationHarness(t *testing.T) *harness {
 		},
 	}
 	h.configureSource()
+	return h
+}
 
+// seedVerificationJob runs the scrape that puts the three seeded addresses on the
+// master list.
+func (h *harness) seedVerificationJob() {
+	h.t.Helper()
 	job := h.waitForJob(h.createJob("Verify seed", []string{"gyms"}, []string{"Austin", "Dallas"}, true).ID)
 	if job.Status != "done" {
-		t.Fatalf("the seed job finished as %q (%s)", job.Status, job.Error)
+		h.t.Fatalf("the seed job finished as %q (%s)", job.Status, job.Error)
 	}
 	if job.Stats.EmailsFound != 3 {
-		t.Fatalf("the seed job found %d addresses, want 3", job.Stats.EmailsFound)
+		h.t.Fatalf("the seed job found %d addresses, want 3", job.Stats.EmailsFound)
 	}
-	return h
 }
 
 // configureVerifier stores a key and enables the email verifier source.

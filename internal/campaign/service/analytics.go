@@ -232,20 +232,24 @@ func buildFunnel(byStage map[string]int64, reached []dbgen.CountCampaignLeadsEve
 
 // GetCampaignAnalytics compares local and provider numbers for one campaign.
 func (s *Service) GetCampaignAnalytics(ctx context.Context, id uuid.UUID, days int) (CampaignAnalytics, error) {
-	if _, err := s.campaign(ctx, id); err != nil {
+	camp, err := s.campaign(ctx, id)
+	if err != nil {
 		return CampaignAnalytics{}, err
 	}
 	if days <= 0 {
 		days = 30
 	}
 	out := CampaignAnalytics{Instantly: map[string]any{}, Mismatch: []Mismatch{}, Daily: []DailyPoint{}, LeadCounts: map[string]int64{}}
-	var err error
 	if out.Local, err = s.metrics(ctx, "WHERE s.campaign_id = $1", id); err != nil {
 		return out, err
 	}
 	if snap, err := s.store.LatestCampaignAnalyticsSnapshot(ctx, dbgen.LatestCampaignAnalyticsSnapshotParams{CampaignID: id, Source: campaign.SnapshotInstantly}); err == nil {
 		_ = json.Unmarshal(snap.Metrics, &out.Instantly)
-		out.Mismatch = mismatches(out.Local, out.Instantly)
+		// A campaign started in Instantly sends nothing through us, so our zeros
+		// against its figures are not a disagreement a sync could ever resolve.
+		if camp.Source != campaign.CampaignSourceInstantly {
+			out.Mismatch = mismatches(out.Local, out.Instantly)
+		}
 	}
 	rows, err := s.store.Pool().Query(ctx, `
 		SELECT to_char(date_trunc('day', s.sent_at), 'YYYY-MM-DD'), count(*)::bigint,

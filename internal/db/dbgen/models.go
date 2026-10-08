@@ -11,6 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AiChatgptConnection struct {
+	ID              int16
+	Status          string
+	Subject         string
+	Email           *string
+	Scope           string
+	AccessTokenEnc  []byte
+	RefreshTokenEnc []byte
+	AccessExpiresAt time.Time
+	LastError       *string
+	ConnectedAt     time.Time
+	RefreshedAt     *time.Time
+	UpdatedAt       time.Time
+}
+
+type AiChatgptOauthState struct {
+	StateHash       string
+	CodeVerifierEnc []byte
+	Nonce           string
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+}
+
 type AiGeneration struct {
 	ID                   uuid.UUID
 	Provider             string
@@ -31,6 +54,14 @@ type AiGeneration struct {
 	CreatedAt            time.Time
 	ParsedAt             *time.Time
 	ImportedAt           *time.Time
+}
+
+type BrandScanDismissal struct {
+	ID        uuid.UUID
+	GroupBy   string
+	Key       string
+	Note      *string
+	CreatedAt time.Time
 }
 
 type Business struct {
@@ -108,6 +139,7 @@ type Campaign struct {
 	LeadsPushed               int32
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
+	Source                    string
 }
 
 type CampaignAnalyticsSnapshot struct {
@@ -393,6 +425,35 @@ type GlobalExclusion struct {
 	RemovedNote  *string
 }
 
+type InboxEmail struct {
+	ID                  string
+	ThreadID            *string
+	MessageID           *string
+	Direction           string
+	UeType              *int32
+	EmailAccount        *string
+	LeadEmail           *string
+	FromAddress         *string
+	ToAddresses         *string
+	CcAddresses         *string
+	Subject             *string
+	BodyText            *string
+	BodyHtml            *string
+	ContentPreview      *string
+	Step                *string
+	IsUnread            bool
+	IsAutoReply         bool
+	InterestStatus      *int32
+	AiInterestValue     *float64
+	InstantlyCampaignID *string
+	CampaignID          uuid.NullUUID
+	ContactID           uuid.NullUUID
+	SentAt              time.Time
+	ProviderCreatedAt   time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+}
+
 type Job struct {
 	ID         uuid.UUID
 	Name       string
@@ -570,6 +631,7 @@ type Source struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	Role           string
+	MaxActiveRuns  int32
 }
 
 type SyncRun struct {
@@ -630,6 +692,7 @@ type VerificationRun struct {
 	CreatedAt    time.Time
 	StartedAt    *time.Time
 	FinishedAt   *time.Time
+	Auto         bool
 }
 
 type VerificationRunItem struct {
@@ -642,13 +705,14 @@ type VerificationRunItem struct {
 }
 
 type VerificationSetting struct {
-	ID            int16
-	Weights       []byte
-	Enabled       []byte
-	PaidEnabled   bool
-	PaidThreshold int32
-	PaidMinScore  int32
-	UpdatedAt     time.Time
+	ID             int16
+	Weights        []byte
+	Enabled        []byte
+	PaidEnabled    bool
+	PaidThreshold  int32
+	PaidMinScore   int32
+	UpdatedAt      time.Time
+	AutoSelfVerify bool
 }
 
 type WorkspaceDomain struct {

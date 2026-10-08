@@ -150,7 +150,7 @@ func (q *Queries) ListCampaignVariants(ctx context.Context, campaignID uuid.UUID
 }
 
 const listCampaignsUsingVariant = `-- name: ListCampaignsUsingVariant :many
-SELECT c.id, c.name, c.status, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version, c.instantly_campaign_id, c.instantly_status, c.instantly_sending_status, c.instantly_not_sending_status, c.launch_claimed_at, c.launched_at, c.paused_at, c.completed_at, c.archived_at, c.last_synced_at, c.last_sync_error, c.error, c.leads_total, c.leads_pushed, c.created_at, c.updated_at FROM campaigns c JOIN campaign_variants cv ON cv.campaign_id = c.id WHERE cv.variant_id = $1 ORDER BY c.created_at DESC
+SELECT c.id, c.name, c.status, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version, c.instantly_campaign_id, c.instantly_status, c.instantly_sending_status, c.instantly_not_sending_status, c.launch_claimed_at, c.launched_at, c.paused_at, c.completed_at, c.archived_at, c.last_synced_at, c.last_sync_error, c.error, c.leads_total, c.leads_pushed, c.created_at, c.updated_at, c.source FROM campaigns c JOIN campaign_variants cv ON cv.campaign_id = c.id WHERE cv.variant_id = $1 ORDER BY c.created_at DESC
 `
 
 func (q *Queries) ListCampaignsUsingVariant(ctx context.Context, variantID uuid.UUID) ([]Campaign, error) {
@@ -188,6 +188,7 @@ func (q *Queries) ListCampaignsUsingVariant(ctx context.Context, variantID uuid.
 			&i.LeadsPushed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Source,
 		); err != nil {
 			return nil, err
 		}

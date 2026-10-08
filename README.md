@@ -196,8 +196,7 @@ as real environment variables. **`.env` is gitignored and must never be committe
 | `KARVON_PROVIDER_TIMEOUT` | `5m` | Budget for one provider search. |
 | `KARVON_APIFY_BASE_URL` | `https://api.apify.com` | Override for tests or a proxy. |
 | `KARVON_OUTSCRAPER_BASE_URL` | `https://api.outscraper.cloud` | Override for tests or a proxy. |
-| `KARVON_PROVIDER_MAX_ACTIVE_RUNS` | `6` | How many vendor runs may be in flight at once. Queue concurrency cannot cap this: a worker waiting on a run gives its slot back between polls. Six 8 GB runs fit a 64 GB Apify account; match it to the plan. |
-| `KARVON_PROVIDER_POLL_INTERVAL` | `1m` | How often a worker asks whether a long run has finished, and how often a query waiting for a free slot looks again. |
+| `KARVON_PROVIDER_POLL_INTERVAL` | `1m` | How often a worker asks whether a long run has finished. A query waiting for a free run slot looks again every 15 s (or this, if shorter). |
 | `KARVON_PROVIDER_MAX_RUN_TIME` | `12h` | A run older than this is aborted so it stops spending, and whatever it produced is kept. |
 | `KARVON_PROVIDER_PAGE_SIZE` | `1000` | Dataset rows read per fetch while draining a finished run. |
 | `KARVON_APIFY_RUN_MEMORY_MB` | `8192` | Memory per run. It buys speed and a bigger share of the account memory limit, not more results. |
@@ -225,20 +224,29 @@ as real environment variables. **`.env` is gitignored and must never be committe
 | `KARVON_EVENT_RETENTION_DAYS` | `30` | `job_events` older than this are pruned daily. |
 | `KARVON_SSE_PING_INTERVAL` | `15s` | Keep-alive comment interval on the event stream. |
 | `KARVON_MAX_QUERIES_PER_JOB` | `500` | Hard ceiling on terms × locations. |
+| `KARVON_REPORT_MAILBOX_MONTHLY_CENTS` | `0` | Price of one provisioned Workspace mailbox per month, prorated into the client report's spend (`GET /dashboard/report`). `0` leaves mailboxes out. |
+| `KARVON_REPORT_FIXED_MONTHLY_CENTS` | `0` | Flat monthly tooling bill (sending platform, newsletter plan…) prorated into the client report's spend from the first job, campaign or mailbox on. `0` leaves it out. |
 | `KARVON_PUBLIC_BASE_URL` | _(empty)_ | Public URL of this API, used to register the Instantly and Mailchimp webhooks. Empty is supported: reconciliation keeps campaign data correct without webhooks. |
 | `KARVON_INSTANTLY_BASE_URL` | `https://api.instantly.ai/api/v2` | Override for tests or a proxy. |
 | `KARVON_INSTANTLY_TIMEOUT` | `30s` | Budget for one Instantly call including retries. |
 | `KARVON_INSTANTLY_RPS` | `5` | Outbound Instantly calls per second. The workspace limit is 100/s shared across every key. |
 | `KARVON_INSTANTLY_LEAD_BATCH` | `100` | Leads per `POST /leads/add`. Instantly's own advice; its hard cap is 1000. |
 | `KARVON_INSTANTLY_LEAD_BATCH_GAP` | `2s` | Pause between lead batches, scheduled rather than slept so no worker blocks. |
+| `KARVON_INSTANTLY_EMAILS_PER_MINUTE` | `18` | Calls per minute to `GET /emails`, which Instantly limits to 20 a minute on its own. Shared by the inbox sync, opening a thread, and the sent-email backfill. |
 | `KARVON_MAILCHIMP_BASE_URL` | `https://{dc}.api.mailchimp.com/3.0` | `{dc}` is replaced with the data-centre suffix of the stored key. |
 | `KARVON_MAILCHIMP_TIMEOUT` | `30s` | Budget for one Mailchimp call. |
 | `KARVON_MAILCHIMP_CONCURRENCY` | `4` | In-flight Mailchimp requests. The account limit is 10 simultaneous connections. |
 | `KARVON_MAILCHIMP_WEBHOOK_TOLERANCE` | `5m` | Clock skew allowed on an inbound `X-Mailchimp-Signature`. |
-| `KARVON_OPENAI_API_KEY` | _(empty)_ | Switches the AI generator from the manual ChatGPT flow to the API. A ChatGPT subscription does not provide this key. |
+| `KARVON_OPENAI_API_KEY` | _(empty)_ | Switches the AI generator from the manual ChatGPT flow to the API. A ChatGPT subscription does not provide this key; Sign in with ChatGPT (below) is the way to use one. |
 | `KARVON_OPENAI_MODEL` | `gpt-5.6-terra` | Model id for the API generator. |
 | `KARVON_OPENAI_BASE_URL` | `https://api.openai.com/v1` | Override for tests or a proxy. |
 | `KARVON_OPENAI_TIMEOUT` | `120s` | Budget for one generation. |
+| `KARVON_CHATGPT_CLIENT_ID` | _(empty)_ | Turns on Sign in with ChatGPT. Issued by OpenAI; see [The AI generator](#the-ai-generator). |
+| `KARVON_CHATGPT_CLIENT_SECRET` | _(empty)_ | Only if OpenAI issued a confidential client. |
+| `KARVON_CHATGPT_MODEL` | `gpt-5.6-terra` | Model id for generations on the ChatGPT plan. |
+| `KARVON_CHATGPT_REDIRECT_URL` | `$KARVON_PUBLIC_BASE_URL/api/v1/ai/chatgpt/callback` | The callback registered with OpenAI. |
+| `KARVON_CHATGPT_RETURN_URL` | first `KARVON_CORS_ORIGIN` | Dashboard page the browser lands on after signing in, with `?chatgpt=connected` or `?chatgpt=error&reason=…`. |
+| `KARVON_CHATGPT_ISSUER` / `_AUTHORIZE_URL` / `_TOKEN_URL` | `https://auth.openai.com/…` | OpenAI's OAuth endpoints; overridden only in tests. |
 | `KARVON_CAMPAIGN_SYNC_INTERVAL` | `15m` | How often every live campaign is reconciled with Instantly. |
 | `KARVON_CAMPAIGN_ACCOUNTS_SYNC_INTERVAL` | `6h` | How often the sending-account mirror and the Mailchimp audiences refresh. |
 | `KARVON_CAMPAIGN_WEBHOOK_REPLAY_INTERVAL` | `30m` | How often failed Instantly deliveries are replayed. |
@@ -248,6 +256,8 @@ as real environment variables. **`.env` is gitignored and must never be committe
 | `KARVON_CAMPAIGN_EVENT_CONCURRENCY` | `4` | Workers applying provider events. |
 | `KARVON_CAMPAIGN_MAX_IMPORT` | `50000` | Ceiling on one lead import. |
 | `KARVON_WEBHOOK_MAX_BODY_BYTES` | `1048576` | Cap on an inbound provider delivery. |
+| `KARVON_INBOX_SYNC_INTERVAL` | `5m` | Periodic inbox pass. Every reply webhook also queues one, so this only matters for replies no webhook reported. |
+| `KARVON_INBOX_BACKFILL_DAYS` | `90` | How far back the first inbox sync reaches. |
 | `KARVON_CLOUDFLARE_BASE_URL` | `https://api.cloudflare.com/client/v4` | Cloudflare API root. |
 | `KARVON_CLOUDFLARE_TIMEOUT` | `45s` | One Cloudflare call; registration alone can wait 10 s. At least 15 s. |
 | `KARVON_DOMAIN_POLL_INTERVAL` | `15s` | How often a registration Cloudflare is still working on is asked about again. |
@@ -528,8 +538,11 @@ stage: it is the cleanup that stops vendor runs still spending after a job ends.
    twice. Mixing granularities inside one job — a state *and* a city inside it — is the
    one way to reintroduce the overlap.
 2. **`scrape_query`** (worker pool `KARVON_QUERY_CONCURRENCY`; for a vendor with long
-   runs the cap that matters is `KARVON_PROVIDER_MAX_ACTIVE_RUNS`, because a worker
-   waiting on a run gives its slot back between polls) — one provider search per
+   runs the cap that matters is the source's `max_active_runs`, set on the Sources
+   card, because a worker waiting on a run gives its slot back between polls. The cap
+   is per vendor account and shared by every job: two jobs started side by side take
+   turns, and a location that finds every slot taken waits and starts within seconds
+   of another run finishing) — one provider search per
    location. Listings upsert into `businesses` (by `place_id`, else by `domain`,
    else by `phone`+`zip`) and link to the job via `job_results`. Transient failures
    retry three times with backoff; an authentication failure fails the whole job at
@@ -572,7 +585,7 @@ stage: it is the cleanup that stops vendor runs still spending after a job ends.
 ### Scraping every state
 
 One job, `locations: []` (which expands to all 51 states), every term in `terms`, and
-`max_per_query: -1` for full coverage. That is 51 runs, `KARVON_PROVIDER_MAX_ACTIVE_RUNS`
+`max_per_query: -1` for full coverage. That is 51 runs, the source's `max_active_runs`
 of them at a time, each bounded by `KARVON_APIFY_MAX_CHARGE_USD`. Pilot it on two or
 three small states first and read `stats.duplicates` and the real cost per place from
 the vendor console before committing to the other 48. Re-scraping a state always
@@ -629,6 +642,15 @@ contributed what.
                             ↓
      final_score = the paid verdict when there is one, else free_score
 ```
+
+### Automatic self verification
+
+With `auto_self_verify` on in the verification settings (the default), a periodic
+sweep (`verify_auto_self`, every `KARVON_VERIFY_AUTO_INTERVAL`, default `2m`) starts a
+self run over every address that has never been through the free stage, so emails
+are scored as scrapes find them. It waits while any self run is in flight, so one
+batch is scored at a time and nothing twice; those runs are marked `auto: true`. It
+never starts the paid stage, which stays an operator decision.
 
 ### The free providers
 
@@ -1002,12 +1024,20 @@ and is the only source of truth when no public URL is configured.
 
 | Job | Interval | What it reconciles |
 | --- | --- | --- |
-| `campaign_sync_all` → `campaign_sync_campaign` | `KARVON_CAMPAIGN_SYNC_INTERVAL` (15m) | Campaign status and sending status, the Instantly analytics snapshot, every lead's status and counters, and sends the webhook never delivered |
+| `campaign_sync_all` → `campaign_sync_campaign` | `KARVON_CAMPAIGN_SYNC_INTERVAL` (15m), or `POST /campaigns/sync` | Imports campaigns started in Instantly's own app (`source: instantly`), then for every live campaign: status and sending status, the Instantly analytics snapshot, every lead's status and counters, and sends the webhook never delivered |
 | `campaign_sync_accounts` | `KARVON_CAMPAIGN_ACCOUNTS_SYNC_INTERVAL` (6h) | The sending-account mirror and its daily analytics |
 | `campaign_replay_webhook_events` | `KARVON_CAMPAIGN_WEBHOOK_REPLAY_INTERVAL` (30m) | Instantly deliveries that failed and will not be retried, re-ingested through the same path |
 | `campaign_sync_leads_full` | `KARVON_CAMPAIGN_LEADS_FULL_SYNC_INTERVAL` (24h) | A full lead diff for every launched campaign |
 | `newsletter_sync_members` | `KARVON_NEWSLETTER_SYNC_INTERVAL` (30m) | Mailchimp member status for everything we pushed |
 | `newsletter_sync_audiences` | 6h | The audience mirror |
+| `campaign_sync_inbox` | `KARVON_INBOX_SYNC_INTERVAL` (5m), and on every `reply_received` webhook | Received emails from the Unibox into `inbox_emails` |
+
+Every campaign carries a `source`: `karvon` for one built and launched here,
+`instantly` for one started in Instantly and imported by the sync. An imported
+campaign is mirrored, not edited — its name and status follow Instantly, its
+counters come from the Instantly analytics snapshot because its leads are never
+copied here, and editing, launching, importing leads into it or changing its
+mailboxes or variants answers `409`. Pause, resume, sync and archive still work.
 
 Every inbound delivery is stored in `provider_events` under a `dedupe_key` — a
 SHA-256 of the payload's identifying fields, because neither provider sends an event
@@ -1015,6 +1045,43 @@ id — and a `UNIQUE` violation makes a redelivery a no-op. Applying an event is
 transaction, and a timeline entry is unique per `(provider_event_id, type)`, so the
 same event arriving twice, or a job retried after a crash, changes nothing the
 second time.
+
+### Inbox and outreach outcomes
+
+`inbox_emails` mirrors Instantly's Unibox so replies can be read without opening
+Instantly. The sync walks `GET /emails?email_type=received` oldest-first from a
+little before the newest email already stored, upserting by Instantly's email id;
+the first run reaches back `KARVON_INBOX_BACKFILL_DAYS`, thirty pages at a time,
+each run queueing the next until it catches up. A `reply_received` webhook queues a
+run at once, so a reply is readable within seconds when webhooks are registered.
+Sent emails are not mirrored by the sync: opening a thread
+(`GET /inbox/threads/{threadId}`) fetches its sent side the first time.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /inbox` | Received emails, newest first. One row per thread and no auto-replies by default; filters for unread, mailbox, campaign and text |
+| `GET /inbox/threads/{threadId}` | The whole conversation with bodies; `?refresh=true` asks Instantly again |
+| `POST /inbox/threads/{threadId}/read` | Marks the thread read at Instantly and here |
+| `POST /inbox/sync` | Queues a sync now |
+| `GET /outreach/leads` | Every contacted campaign lead with its outcome, plus per-outcome totals |
+| `GET /outreach/leads/export.csv` | The same table, same filters, streamed as CSV |
+
+The outcome folds Instantly's interest status and the lead's delivery state into
+one word, the interest status winning:
+
+| Outcome | When |
+| --- | --- |
+| `successful` | Meeting booked, meeting completed, or won |
+| `potential` | Interested, or no-show |
+| `bad` | Not interested, wrong person, lost, or unsubscribed |
+| `bounced` | The address bounced |
+| `replied` | A reply nobody has labelled yet, or an out-of-office |
+| `no_reply` | Emailed, no answer |
+| `not_contacted` | Not emailed yet; hidden unless `include_not_contacted=true` |
+
+The export carries the outcome and Instantly's own label side by side, so it can
+be filtered in a spreadsheet either way. The table covers campaigns launched from
+Karvon; leads added to Instantly by hand have no campaign lead row here.
 
 ### Webhooks
 
@@ -1044,12 +1111,13 @@ Create the API v2 key with the narrowest set that works:
 ```
 campaigns:read campaigns:create campaigns:update
 leads:read leads:create leads:update leads:delete
-accounts:read emails:read
+accounts:read emails:read emails:update
 webhooks:all webhook_events:read
 background-jobs:read account_campaign_mappings:read
 ```
 
-Never `all:all`. Instantly's limits are 100 requests per second and 6 000 per minute
+`emails:update` is only for marking an inbox thread read; without it the inbox
+still syncs and reads. Never `all:all`. Instantly's limits are 100 requests per second and 6 000 per minute
 for the whole workspace, shared across every key; `KARVON_INSTANTLY_RPS` paces our
 own calls well below that, and leads are pushed in batches of
 `KARVON_INSTANTLY_LEAD_BATCH` with `KARVON_INSTANTLY_LEAD_BATCH_GAP` between them.
@@ -1059,16 +1127,63 @@ Mailchimp allows ten simultaneous connections per account, which
 
 ### The AI generator
 
-The generator turns a campaign brief into components and variants. Both providers
-implement one interface, and the UI calls the whole thing "ChatGPT".
+The generator turns a campaign brief into components and variants. All three
+providers implement one interface, and the UI calls the whole thing "ChatGPT".
 
-**A ChatGPT subscription does not include API access.** OpenAI bills the API
-separately, per token, against a key from platform.openai.com, and "Sign in with
-ChatGPT" only authorises OpenAI's own Codex surfaces. So the default is a manual
-round trip: the brief builds a prompt, the operator pastes it into ChatGPT, pastes
-the JSON reply back, and the parsed output is imported. Set `KARVON_OPENAI_API_KEY`
-and the same brief runs through the Responses API with a strict JSON schema instead
-— identical prompt, identical parsing, identical review flow.
+| Provider | When it serves | Who pays |
+| --- | --- | --- |
+| `chatgpt_plan` | A ChatGPT account is connected with Sign in with ChatGPT | The operator's ChatGPT Plus/Pro plan |
+| `openai_api` | `KARVON_OPENAI_API_KEY` is set and no account is connected | Per token, on the API key |
+| `manual_chatgpt` | Neither | Nobody: the operator copies the prompt into ChatGPT and pastes the JSON back |
+
+The provider is chosen per request, so connecting or disconnecting takes effect on
+the next generation. Every provider uses the same prompt, the same parser and the same
+review flow.
+
+**Sign in with ChatGPT.** Since OpenAI's DevDay on 2026-09-29, a Plus or Pro user can
+let an app run Responses API requests against their ChatGPT plan instead of an API
+key. Each app gets a weekly cap that the user sets in ChatGPT. It needs a client id
+from OpenAI. Self-serve ids go only to open-source and locally run apps; a hosted
+app like this one applies through OpenAI's interest form
+(https://developers.openai.com/siwc/quickstart). Until an id is issued, leave
+`KARVON_CHATGPT_CLIENT_ID` empty and nothing changes.
+
+With an id configured:
+
+1. The dashboard calls `POST /ai/chatgpt/connect` and sends the browser to the
+   `authorize_url` it returns. That is an OAuth 2.0 authorization-code flow with PKCE,
+   asking for `chatgpt.tokens.use.direct` and `offline_access`.
+2. OpenAI returns the browser to `GET /ai/chatgpt/callback`. The route takes no API
+   key and trusts only a single-use state that expires after 10 minutes and is stored
+   hashed. It exchanges the code, checks the ID token's issuer, audience and nonce,
+   stores both tokens encrypted with `KARVON_SECRET_KEY` in `ai_chatgpt_connection`,
+   and redirects to `KARVON_CHATGPT_RETURN_URL`.
+3. Generations stream from the Responses API with `store: false`, as plan usage
+   requires, and without `max_output_tokens`. The 1-hour access token is refreshed
+   on demand under a row lock, because OpenAI rotates the refresh token on every
+   refresh.
+4. `GET /ai/provider` reports `chatgpt.status`: `connected`, `needs_reconnect` or
+   `disconnected`. `DELETE /ai/chatgpt` forgets the tokens. To revoke access at OpenAI
+   as well, the user removes Karvon in their ChatGPT settings.
+
+Two failures are specific to this provider:
+
+- **The plan's cap is used up.** OpenAI answers
+  `subscription_sharing_usage_limit_exceeded` and the API returns `429` with code
+  `ai_plan_limit`. Karvon does **not** fall back to the API key: OpenAI does not switch
+  billing, and neither do we. The operator raises the cap, waits, or uses the manual
+  flow, which the dashboard requests with `"manual": true` on `POST /ai/generations`.
+- **The sign-in is revoked**, or the refresh token expires after 30 days unused. The
+  connection becomes `needs_reconnect`, generations fall back to the API key or the
+  manual flow, and the dashboard asks the operator to sign in again.
+
+Plan usage is for requests a person starts. Generation only runs when someone
+clicks Generate, so it qualifies; never move it into a background job.
+
+Not yet confirmed against OpenAI's live service: whether plan tokens accept the
+strict JSON-schema `text.format`. If they reject it, the reply still parses, because
+the prompt asks for the same JSON. The request header set may also need adjusting
+once a real client id can be tested.
 
 Generated content never goes live on its own. It arrives as `ai_generated` and a
 human has to review and approve it before a campaign can use it.

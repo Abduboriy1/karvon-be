@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/bory/karvon-be/internal/queue"
 )
@@ -17,6 +18,7 @@ const (
 	KindSelf       = "verify_self"
 	KindThirdParty = "verify_third_party"
 	KindFinalize   = "verify_run_finalize"
+	KindAutoSelf   = "verify_auto_self"
 )
 
 // RunArgs expands a run's filter into items and fans out one job per address.
@@ -94,6 +96,34 @@ func (a FinalizeArgs) InsertOpts() river.InsertOpts {
 		MaxAttempts: 5,
 		Metadata:    RunMetadata(a.RunID),
 		UniqueOpts:  river.UniqueOpts{ByArgs: true},
+	}
+}
+
+// AutoSelfArgs is the periodic sweep that starts a self run over every address
+// that has never been scored, when the settings ask for it.
+//
+// It is unique only while one is waiting or running. River's default would also
+// count a completed sweep, which would silence the sweep until the completed row
+// was cleaned up a day later.
+type AutoSelfArgs struct{}
+
+// Kind implements river.JobArgs.
+func (AutoSelfArgs) Kind() string { return KindAutoSelf }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (AutoSelfArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue:       queue.QueueDefault,
+		MaxAttempts: 1,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				rivertype.JobStateAvailable,
+				rivertype.JobStatePending,
+				rivertype.JobStateRunning,
+				rivertype.JobStateScheduled,
+			},
+		},
 	}
 }
 

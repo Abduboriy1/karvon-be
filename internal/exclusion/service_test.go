@@ -54,6 +54,28 @@ func TestNormalizeProducesTheMatchKey(t *testing.T) {
 	}
 }
 
+func TestNormalizeKeepsADomainFragmentForContainsRules(t *testing.T) {
+	s := &Service{}
+	ctx := context.Background()
+	cases := []struct {
+		kind, value, want string
+	}{
+		{KindDomain, "YMCA", "ymca"},
+		{KindDomain, "https://www.ClubFitness.us/locations", "clubfitness.us"},
+		{KindEmailDomain, "@ymca", "ymca"},
+		{KindDomain, "club-fitness", "club-fitness"},
+	}
+	for _, tc := range cases {
+		params, err := s.normalize(ctx, Input{Kind: tc.kind, Value: tc.value, MatchMode: MatchContains})
+		if err != nil {
+			t.Fatalf("%s %q: %v", tc.kind, tc.value, err)
+		}
+		if params.Value != tc.want || params.MatchMode != MatchContains {
+			t.Errorf("%s %q -> %+v, want value %q", tc.kind, tc.value, params, tc.want)
+		}
+	}
+}
+
 func TestNormalizeRejectsWhatCannotMatchReliably(t *testing.T) {
 	s := &Service{}
 	ctx := context.Background()
@@ -70,6 +92,11 @@ func TestNormalizeRejectsWhatCannotMatchReliably(t *testing.T) {
 		{"bare tld", Input{Kind: KindEmailDomain, Value: "@com"}, "value"},
 		{"prefix on a domain", Input{Kind: KindDomain, Value: "example.com", MatchMode: MatchPrefix}, "match_mode"},
 		{"unknown mode", Input{Kind: KindCompany, Value: "Acme", MatchMode: "fuzzy"}, "match_mode"},
+		{"contains on an address", Input{Kind: KindEmail, Value: "a@b.com", MatchMode: MatchContains}, "match_mode"},
+		{"short fragment", Input{Kind: KindDomain, Value: "ab", MatchMode: MatchContains}, "value"},
+		{"tld fragment", Input{Kind: KindDomain, Value: ".com", MatchMode: MatchContains}, "value"},
+		{"bare tld fragment", Input{Kind: KindDomain, Value: "org", MatchMode: MatchContains}, "value"},
+		{"spaces in a fragment", Input{Kind: KindDomain, Value: "club fitness", MatchMode: MatchContains}, "value"},
 		{"unknown source", Input{Kind: KindDomain, Value: "example.com", Source: "robot"}, "source"},
 		{"long reason", Input{Kind: KindDomain, Value: "example.com", Reason: &reason}, "reason"},
 	}
@@ -101,6 +128,8 @@ func TestWarningsFlagRulesBroaderThanIntended(t *testing.T) {
 		{"free mail domain", dbgen.CreateGlobalExclusionParams{Kind: KindEmailDomain, Value: "gmail.com"}, db.ExclusionAffected{}, "shared mailbox"},
 		{"many businesses", dbgen.CreateGlobalExclusionParams{Kind: KindDomain, Value: "big.com"}, db.ExclusionAffected{Businesses: broadRuleThreshold}, "covers"},
 		{"one-word prefix", dbgen.CreateGlobalExclusionParams{Kind: KindCompany, Value: "apple", MatchMode: MatchPrefix}, db.ExclusionAffected{}, "one-word prefix"},
+		{"short contains", dbgen.CreateGlobalExclusionParams{Kind: KindDomain, Value: "gym", MatchMode: MatchContains}, db.ExclusionAffected{}, "is short"},
+		{"brand contains", dbgen.CreateGlobalExclusionParams{Kind: KindDomain, Value: "ymca", MatchMode: MatchContains}, db.ExclusionAffected{Businesses: 110}, ""},
 		{"ordinary rule", dbgen.CreateGlobalExclusionParams{Kind: KindCompany, Value: "planet fitness", MatchMode: MatchPrefix}, db.ExclusionAffected{Businesses: 12}, ""},
 	}
 	for _, tc := range cases {

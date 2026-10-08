@@ -343,7 +343,7 @@ func (a *applier) apply(ctx context.Context, ev webhook.InstantlyEvent) error {
 			}
 		}
 		code, label := interestFor(ev.EventType)
-		if err := a.q.SetCampaignLeadInterest(ctx, dbgen.SetCampaignLeadInterestParams{ID: a.lead.ID, InterestStatus: campaign.Ptr(campaign.Int32(code)), InterestLabel: &label}); err != nil {
+		if err := a.q.SetCampaignLeadInterest(ctx, dbgen.SetCampaignLeadInterestParams{ID: a.lead.ID, InterestStatus: campaign.Ptr(campaign.SignedInt32(code)), InterestLabel: &label}); err != nil {
 			return err
 		}
 		before, after, err := a.advance(ctx, campaign.StageInterested)
@@ -385,7 +385,7 @@ func (a *applier) apply(ctx context.Context, ev webhook.InstantlyEvent) error {
 			}
 		}
 		code, label := interestFor(ev.EventType)
-		if err := a.q.SetCampaignLeadInterest(ctx, dbgen.SetCampaignLeadInterestParams{ID: a.lead.ID, InterestStatus: campaign.Ptr(campaign.Int32(code)), InterestLabel: &label}); err != nil {
+		if err := a.q.SetCampaignLeadInterest(ctx, dbgen.SetCampaignLeadInterestParams{ID: a.lead.ID, InterestStatus: campaign.Ptr(campaign.SignedInt32(code)), InterestLabel: &label}); err != nil {
 			return err
 		}
 		before := campaign.Stage(a.contact.LifecycleStage)

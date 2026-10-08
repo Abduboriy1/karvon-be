@@ -145,6 +145,12 @@ type Campaign struct {
 	TimestampUpdated time.Time  `json:"timestamp_updated"`
 }
 
+// CampaignPage is one page of GET /campaigns.
+type CampaignPage struct {
+	Items             []Campaign `json:"items"`
+	NextStartingAfter string     `json:"next_starting_after"`
+}
+
 // SendingStatus is GET /campaigns/{id}/sending-status.
 type SendingStatus struct {
 	Status            string     `json:"status"`
@@ -344,13 +350,24 @@ type Email struct {
 	EAccount         string    `json:"eaccount"`
 	FromAddress      string    `json:"from_address_email"`
 	ToAddressList    string    `json:"to_address_email_list"`
+	CCAddressList    string    `json:"cc_address_email_list"`
 	Subject          string    `json:"subject"`
+	Body             EmailBody `json:"body"`
+	ContentPreview   string    `json:"content_preview"`
 	Step             string    `json:"step"`
 	UEType           int       `json:"ue_type"`
+	IsUnread         *int      `json:"is_unread"`
 	IsAutoReply      int       `json:"is_auto_reply"`
+	InterestStatus   *int      `json:"i_status"`
 	AIInterestValue  *float64  `json:"ai_interest_value"`
 	TimestampEmail   time.Time `json:"timestamp_email"`
 	TimestampCreated time.Time `json:"timestamp_created"`
+}
+
+// EmailBody is an email's content in both forms Instantly keeps.
+type EmailBody struct {
+	Text string `json:"text"`
+	HTML string `json:"html"`
 }
 
 // ListEmailsInput filters GET /emails.
@@ -361,7 +378,14 @@ type ListEmailsInput struct {
 	Limit         int
 	StartingAfter string
 	SortOrder     string
+	// Search is a lead address, or "thread:<thread_id>" for one conversation.
+	Search string
+	// MinTimestampCreated keeps emails Instantly stored after this instant.
+	MinTimestampCreated *time.Time
 }
+
+// ThreadSearch is the Search value that lists one thread.
+func ThreadSearch(threadID string) string { return "thread:" + threadID }
 
 // EmailPage is one page of emails.
 type EmailPage struct {
@@ -454,6 +478,9 @@ type Client interface {
 
 	CreateCampaign(ctx context.Context, in CreateCampaignInput) (Campaign, error)
 	GetCampaign(ctx context.Context, id string) (Campaign, error)
+	// ListCampaigns pages through every campaign in the workspace, including
+	// the ones started in Instantly's own app.
+	ListCampaigns(ctx context.Context, startingAfter string) (CampaignPage, error)
 	UpdateCampaign(ctx context.Context, id string, in UpdateCampaignInput) (Campaign, error)
 	ActivateCampaign(ctx context.Context, id string) error
 	PauseCampaign(ctx context.Context, id string) error
@@ -480,6 +507,7 @@ type Client interface {
 	CampaignStepAnalytics(ctx context.Context, id string) ([]StepAnalytics, error)
 
 	ListEmails(ctx context.Context, in ListEmailsInput) (EmailPage, error)
+	MarkThreadRead(ctx context.Context, threadID string) error
 
 	CreateWebhook(ctx context.Context, in CreateWebhookInput) (Webhook, error)
 	GetWebhook(ctx context.Context, id string) (Webhook, error)

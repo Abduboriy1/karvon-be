@@ -156,7 +156,7 @@ func TestCampaignSchemaMatchesTheGoConstants(t *testing.T) {
 		INSERT INTO sync_runs (id, kind) VALUES (gen_random_uuid(), $1)`, campaign.SyncKinds, "astrology")
 	check(t, "generation provider", `
 		INSERT INTO ai_generations (id, provider, prompt, prompt_version) VALUES (gen_random_uuid(), $1, 'p', 'v')`,
-		[]string{campaign.AIProviderManual, campaign.AIProviderOpenAI}, "oracle")
+		[]string{campaign.AIProviderManual, campaign.AIProviderOpenAI, campaign.AIProviderChatGPT}, "oracle")
 	check(t, "generation status", `
 		INSERT INTO ai_generations (id, provider, status, prompt, prompt_version)
 		VALUES (gen_random_uuid(), 'manual_chatgpt', $1, 'p', 'v')`, campaign.GenerationStatuses, "pondered")

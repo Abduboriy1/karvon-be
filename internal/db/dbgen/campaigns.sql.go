@@ -7,6 +7,7 @@ package dbgen
 
 import (
 	"context"
+	"time"
 
 	uuid "github.com/google/uuid"
 )
@@ -29,7 +30,7 @@ const archiveCampaign = `-- name: ArchiveCampaign :one
 UPDATE campaigns
 SET status = 'archived', archived_at = now(), updated_at = now()
 WHERE id = $1 AND status <> 'archived'
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 func (q *Queries) ArchiveCampaign(ctx context.Context, id uuid.UUID) (Campaign, error) {
@@ -61,6 +62,7 @@ func (q *Queries) ArchiveCampaign(ctx context.Context, id uuid.UUID) (Campaign, 
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -80,7 +82,7 @@ const claimCampaignLaunch = `-- name: ClaimCampaignLaunch :one
 UPDATE campaigns
 SET status = 'launching', launch_claimed_at = now(), error = NULL, updated_at = now()
 WHERE id = $1 AND status = 'ready'
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 // A compare-and-set: only a ready campaign can start launching, and only once.
@@ -113,6 +115,7 @@ func (q *Queries) ClaimCampaignLaunch(ctx context.Context, id uuid.UUID) (Campai
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -150,7 +153,7 @@ const createCampaign = `-- name: CreateCampaign :one
 INSERT INTO campaigns (id, name, brief, schedule, settings, steps, step_delays)
 VALUES ($1, $2, $3, $4, $5,
         $6, $7)
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 type CreateCampaignParams struct {
@@ -200,12 +203,13 @@ func (q *Queries) CreateCampaign(ctx context.Context, arg CreateCampaignParams) 
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
 
 const getCampaign = `-- name: GetCampaign :one
-SELECT id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at FROM campaigns WHERE id = $1
+SELECT id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source FROM campaigns WHERE id = $1
 `
 
 func (q *Queries) GetCampaign(ctx context.Context, id uuid.UUID) (Campaign, error) {
@@ -237,12 +241,13 @@ func (q *Queries) GetCampaign(ctx context.Context, id uuid.UUID) (Campaign, erro
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
 
 const getCampaignByInstantlyID = `-- name: GetCampaignByInstantlyID :one
-SELECT id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at FROM campaigns WHERE instantly_campaign_id = $1
+SELECT id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source FROM campaigns WHERE instantly_campaign_id = $1
 `
 
 func (q *Queries) GetCampaignByInstantlyID(ctx context.Context, instantlyCampaignID *string) (Campaign, error) {
@@ -274,6 +279,7 @@ func (q *Queries) GetCampaignByInstantlyID(ctx context.Context, instantlyCampaig
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -326,7 +332,7 @@ func (q *Queries) ListCampaignSendingAccounts(ctx context.Context, campaignID uu
 }
 
 const listCampaignsByStatus = `-- name: ListCampaignsByStatus :many
-SELECT id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at FROM campaigns WHERE status = ANY($1::text[]) ORDER BY created_at
+SELECT id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source FROM campaigns WHERE status = ANY($1::text[]) ORDER BY created_at
 `
 
 func (q *Queries) ListCampaignsByStatus(ctx context.Context, statuses []string) ([]Campaign, error) {
@@ -364,6 +370,7 @@ func (q *Queries) ListCampaignsByStatus(ctx context.Context, statuses []string) 
 			&i.LeadsPushed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Source,
 		); err != nil {
 			return nil, err
 		}
@@ -376,7 +383,7 @@ func (q *Queries) ListCampaignsByStatus(ctx context.Context, statuses []string) 
 }
 
 const listCampaignsForSendingAccount = `-- name: ListCampaignsForSendingAccount :many
-SELECT c.id, c.name, c.status, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version, c.instantly_campaign_id, c.instantly_status, c.instantly_sending_status, c.instantly_not_sending_status, c.launch_claimed_at, c.launched_at, c.paused_at, c.completed_at, c.archived_at, c.last_synced_at, c.last_sync_error, c.error, c.leads_total, c.leads_pushed, c.created_at, c.updated_at FROM campaigns c
+SELECT c.id, c.name, c.status, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version, c.instantly_campaign_id, c.instantly_status, c.instantly_sending_status, c.instantly_not_sending_status, c.launch_claimed_at, c.launched_at, c.paused_at, c.completed_at, c.archived_at, c.last_synced_at, c.last_sync_error, c.error, c.leads_total, c.leads_pushed, c.created_at, c.updated_at, c.source FROM campaigns c
 JOIN campaign_sending_accounts csa ON csa.campaign_id = c.id
 WHERE csa.sending_account_id = $1
 ORDER BY c.created_at DESC
@@ -417,6 +424,7 @@ func (q *Queries) ListCampaignsForSendingAccount(ctx context.Context, sendingAcc
 			&i.LeadsPushed,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Source,
 		); err != nil {
 			return nil, err
 		}
@@ -432,7 +440,7 @@ const markCampaignActive = `-- name: MarkCampaignActive :one
 UPDATE campaigns
 SET status = 'active', launched_at = COALESCE(launched_at, now()), paused_at = NULL, error = NULL, updated_at = now()
 WHERE id = $1 AND status IN ('launching', 'paused', 'active')
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 func (q *Queries) MarkCampaignActive(ctx context.Context, id uuid.UUID) (Campaign, error) {
@@ -464,6 +472,7 @@ func (q *Queries) MarkCampaignActive(ctx context.Context, id uuid.UUID) (Campaig
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -472,7 +481,7 @@ const markCampaignCompleted = `-- name: MarkCampaignCompleted :one
 UPDATE campaigns
 SET status = 'completed', completed_at = COALESCE(completed_at, now()), updated_at = now()
 WHERE id = $1 AND status IN ('active', 'paused')
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 func (q *Queries) MarkCampaignCompleted(ctx context.Context, id uuid.UUID) (Campaign, error) {
@@ -504,6 +513,7 @@ func (q *Queries) MarkCampaignCompleted(ctx context.Context, id uuid.UUID) (Camp
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -512,7 +522,7 @@ const markCampaignFailed = `-- name: MarkCampaignFailed :one
 UPDATE campaigns
 SET status = 'failed', error = $1, updated_at = now()
 WHERE id = $2 AND status IN ('ready', 'launching')
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 type MarkCampaignFailedParams struct {
@@ -549,6 +559,7 @@ func (q *Queries) MarkCampaignFailed(ctx context.Context, arg MarkCampaignFailed
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -557,7 +568,7 @@ const markCampaignPaused = `-- name: MarkCampaignPaused :one
 UPDATE campaigns
 SET status = 'paused', paused_at = now(), updated_at = now()
 WHERE id = $1 AND status IN ('active', 'launching')
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 func (q *Queries) MarkCampaignPaused(ctx context.Context, id uuid.UUID) (Campaign, error) {
@@ -589,6 +600,7 @@ func (q *Queries) MarkCampaignPaused(ctx context.Context, id uuid.UUID) (Campaig
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -596,7 +608,7 @@ func (q *Queries) MarkCampaignPaused(ctx context.Context, id uuid.UUID) (Campaig
 const markCampaignReady = `-- name: MarkCampaignReady :one
 UPDATE campaigns SET status = 'ready', updated_at = now()
 WHERE id = $1 AND status IN ('draft', 'ready', 'failed')
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 func (q *Queries) MarkCampaignReady(ctx context.Context, id uuid.UUID) (Campaign, error) {
@@ -628,6 +640,7 @@ func (q *Queries) MarkCampaignReady(ctx context.Context, id uuid.UUID) (Campaign
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -640,7 +653,7 @@ FROM (SELECT count(*)::int AS total,
              count(*) FILTER (WHERE pushed_at IS NOT NULL)::int AS pushed
       FROM campaign_leads WHERE campaign_id = $1) counted
 WHERE c.id = $1
-RETURNING c.id, c.name, c.status, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version, c.instantly_campaign_id, c.instantly_status, c.instantly_sending_status, c.instantly_not_sending_status, c.launch_claimed_at, c.launched_at, c.paused_at, c.completed_at, c.archived_at, c.last_synced_at, c.last_sync_error, c.error, c.leads_total, c.leads_pushed, c.created_at, c.updated_at
+RETURNING c.id, c.name, c.status, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version, c.instantly_campaign_id, c.instantly_status, c.instantly_sending_status, c.instantly_not_sending_status, c.launch_claimed_at, c.launched_at, c.paused_at, c.completed_at, c.archived_at, c.last_synced_at, c.last_sync_error, c.error, c.leads_total, c.leads_pushed, c.created_at, c.updated_at, c.source
 `
 
 func (q *Queries) RecomputeCampaignCounts(ctx context.Context, id uuid.UUID) (Campaign, error) {
@@ -672,6 +685,7 @@ func (q *Queries) RecomputeCampaignCounts(ctx context.Context, id uuid.UUID) (Ca
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -680,7 +694,7 @@ const setCampaignInstantlyID = `-- name: SetCampaignInstantlyID :one
 UPDATE campaigns
 SET instantly_campaign_id = $1, updated_at = now()
 WHERE id = $2 AND instantly_campaign_id IS NULL
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 type SetCampaignInstantlyIDParams struct {
@@ -717,6 +731,7 @@ func (q *Queries) SetCampaignInstantlyID(ctx context.Context, arg SetCampaignIns
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -726,24 +741,28 @@ UPDATE campaigns
 SET instantly_status             = $1,
     instantly_sending_status     = $2,
     instantly_not_sending_status = $3,
-    last_synced_at               = now(),
+    last_synced_at               = $4,
     last_sync_error              = NULL,
     updated_at                   = now()
-WHERE id = $4
+WHERE id = $5
 `
 
 type SetCampaignProviderStateParams struct {
 	InstantlyStatus  *int32
 	SendingStatus    *string
 	NotSendingStatus *int32
+	SyncedAt         *time.Time
 	ID               uuid.UUID
 }
 
+// synced_at comes from the workers' clock, not now(): the sent-email backfill
+// compares it with Instantly's timestamps, so both must be on the same clock.
 func (q *Queries) SetCampaignProviderState(ctx context.Context, arg SetCampaignProviderStateParams) error {
 	_, err := q.db.Exec(ctx, setCampaignProviderState,
 		arg.InstantlyStatus,
 		arg.SendingStatus,
 		arg.NotSendingStatus,
+		arg.SyncedAt,
 		arg.ID,
 	)
 	return err
@@ -764,7 +783,7 @@ SET status     = $1,
     error      = $2,
     updated_at = now()
 WHERE id = $3
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 type SetCampaignStatusParams struct {
@@ -802,6 +821,7 @@ func (q *Queries) SetCampaignStatus(ctx context.Context, arg SetCampaignStatusPa
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
 	)
 	return i, err
 }
@@ -820,6 +840,24 @@ func (q *Queries) SetCampaignSyncError(ctx context.Context, arg SetCampaignSyncE
 	return err
 }
 
+const setImportedCampaignCounts = `-- name: SetImportedCampaignCounts :exec
+UPDATE campaigns
+SET leads_total = $1, leads_pushed = $1
+WHERE id = $2 AND source = 'instantly'
+`
+
+type SetImportedCampaignCountsParams struct {
+	LeadsTotal int32
+	ID         uuid.UUID
+}
+
+// An imported campaign's leads live only in Instantly, so its counters come from
+// Instantly's analytics rather than from campaign_leads.
+func (q *Queries) SetImportedCampaignCounts(ctx context.Context, arg SetImportedCampaignCountsParams) error {
+	_, err := q.db.Exec(ctx, setImportedCampaignCounts, arg.LeadsTotal, arg.ID)
+	return err
+}
+
 const updateCampaign = `-- name: UpdateCampaign :one
 UPDATE campaigns
 SET name        = COALESCE($1, name),
@@ -830,7 +868,7 @@ SET name        = COALESCE($1, name),
     step_delays = COALESCE($6, step_delays),
     updated_at  = now()
 WHERE id = $7
-RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source
 `
 
 type UpdateCampaignParams struct {
@@ -880,6 +918,117 @@ func (q *Queries) UpdateCampaign(ctx context.Context, arg UpdateCampaignParams) 
 		&i.LeadsPushed,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Source,
+	)
+	return i, err
+}
+
+const upsertInstantlyCampaign = `-- name: UpsertInstantlyCampaign :one
+INSERT INTO campaigns (id, name, status, steps, source, instantly_campaign_id, instantly_status,
+                       launched_at, paused_at, completed_at, created_at, updated_at)
+VALUES ($1, $2, $3, $4, 'instantly',
+        $5, $6,
+        CASE WHEN $3::text <> 'draft' THEN $7::timestamptz END,
+        CASE WHEN $3::text = 'paused' THEN now() END,
+        CASE WHEN $3::text = 'completed' THEN now() END,
+        $7, now())
+ON CONFLICT (instantly_campaign_id) DO UPDATE
+SET name            = EXCLUDED.name,
+    steps           = EXCLUDED.steps,
+    instantly_status = EXCLUDED.instantly_status,
+    status          = CASE WHEN campaigns.status = 'archived' THEN campaigns.status ELSE EXCLUDED.status END,
+    launched_at     = COALESCE(campaigns.launched_at, EXCLUDED.launched_at),
+    paused_at       = CASE WHEN EXCLUDED.status = 'paused' THEN COALESCE(campaigns.paused_at, now()) END,
+    completed_at    = CASE WHEN EXCLUDED.status = 'completed' THEN COALESCE(campaigns.completed_at, now()) END,
+    updated_at      = CASE WHEN (campaigns.name, campaigns.steps, campaigns.status, campaigns.instantly_status)
+                                IS DISTINCT FROM (EXCLUDED.name, EXCLUDED.steps, EXCLUDED.status, EXCLUDED.instantly_status)
+                           THEN now() ELSE campaigns.updated_at END
+WHERE campaigns.source = 'instantly'
+RETURNING id, name, status, brief, schedule, settings, steps, step_delays, weights_version, instantly_campaign_id, instantly_status, instantly_sending_status, instantly_not_sending_status, launch_claimed_at, launched_at, paused_at, completed_at, archived_at, last_synced_at, last_sync_error, error, leads_total, leads_pushed, created_at, updated_at, source, (xmax = 0)::boolean AS inserted
+`
+
+type UpsertInstantlyCampaignParams struct {
+	ID                  uuid.UUID
+	Name                string
+	Status              string
+	Steps               int32
+	InstantlyCampaignID *string
+	InstantlyStatus     *int32
+	CreatedAt           time.Time
+}
+
+type UpsertInstantlyCampaignRow struct {
+	ID                        uuid.UUID
+	Name                      string
+	Status                    string
+	Brief                     []byte
+	Schedule                  []byte
+	Settings                  []byte
+	Steps                     int32
+	StepDelays                []byte
+	WeightsVersion            int32
+	InstantlyCampaignID       *string
+	InstantlyStatus           *int32
+	InstantlySendingStatus    *string
+	InstantlyNotSendingStatus *int32
+	LaunchClaimedAt           *time.Time
+	LaunchedAt                *time.Time
+	PausedAt                  *time.Time
+	CompletedAt               *time.Time
+	ArchivedAt                *time.Time
+	LastSyncedAt              *time.Time
+	LastSyncError             *string
+	Error                     *string
+	LeadsTotal                int32
+	LeadsPushed               int32
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+	Source                    string
+	Inserted                  bool
+}
+
+// Imports a campaign started in Instantly, or refreshes one imported before. A
+// campaign Karvon launched matches on its Instantly id too, but is left alone
+// (no row comes back): its own sync owns it. An archived import stays archived.
+func (q *Queries) UpsertInstantlyCampaign(ctx context.Context, arg UpsertInstantlyCampaignParams) (UpsertInstantlyCampaignRow, error) {
+	row := q.db.QueryRow(ctx, upsertInstantlyCampaign,
+		arg.ID,
+		arg.Name,
+		arg.Status,
+		arg.Steps,
+		arg.InstantlyCampaignID,
+		arg.InstantlyStatus,
+		arg.CreatedAt,
+	)
+	var i UpsertInstantlyCampaignRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Status,
+		&i.Brief,
+		&i.Schedule,
+		&i.Settings,
+		&i.Steps,
+		&i.StepDelays,
+		&i.WeightsVersion,
+		&i.InstantlyCampaignID,
+		&i.InstantlyStatus,
+		&i.InstantlySendingStatus,
+		&i.InstantlyNotSendingStatus,
+		&i.LaunchClaimedAt,
+		&i.LaunchedAt,
+		&i.PausedAt,
+		&i.CompletedAt,
+		&i.ArchivedAt,
+		&i.LastSyncedAt,
+		&i.LastSyncError,
+		&i.Error,
+		&i.LeadsTotal,
+		&i.LeadsPushed,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Source,
+		&i.Inserted,
 	)
 	return i, err
 }

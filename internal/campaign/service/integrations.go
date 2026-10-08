@@ -87,7 +87,11 @@ type SendingAccountView struct {
 
 // GetIntegrations reports the state of every integration.
 func (s *Service) GetIntegrations(ctx context.Context) (IntegrationsStatus, error) {
-	out := IntegrationsStatus{PublicBaseURL: s.cfg.PublicBaseURL, AI: s.AIProviderInfo()}
+	aiInfo, err := s.AIProviderInfo(ctx)
+	if err != nil {
+		return IntegrationsStatus{}, err
+	}
+	out := IntegrationsStatus{PublicBaseURL: s.cfg.PublicBaseURL, AI: aiInfo}
 	settings, err := s.store.GetCampaignSettings(ctx)
 	if err != nil {
 		return out, apperr.Internal(err)

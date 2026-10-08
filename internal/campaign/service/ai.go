@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
@@ -12,6 +13,7 @@ import (
 	"github.com/bory/karvon-be/internal/apperr"
 	"github.com/bory/karvon-be/internal/campaign"
 	"github.com/bory/karvon-be/internal/campaign/ai"
+	"github.com/bory/karvon-be/internal/campaign/provider"
 	"github.com/bory/karvon-be/internal/campaign/render"
 	"github.com/bory/karvon-be/internal/db/dbgen"
 	"github.com/bory/karvon-be/internal/ids"
@@ -23,6 +25,8 @@ type AIProviderInfo struct {
 	Mode     ai.Mode
 	Model    string
 	Label    string
+	// ChatGPT is the Sign in with ChatGPT state; nil when it is not configured.
+	ChatGPT *ChatGPTConnection
 }
 
 // GenerationView is a generation with its parsed output decoded.
@@ -45,14 +49,19 @@ type ImportOutcome struct {
 	Variants   []dbgen.EmailVariant
 }
 
-// AIProviderInfo reports the generator.
-func (s *Service) AIProviderInfo() AIProviderInfo {
-	return AIProviderInfo{Provider: s.ai.Name(), Mode: s.ai.Mode(), Model: s.ai.Model(), Label: "ChatGPT"}
+// AIProviderInfo reports the generator that would serve a generation right now.
+func (s *Service) AIProviderInfo(ctx context.Context) (AIProviderInfo, error) {
+	gen := s.generator(ctx)
+	chatgpt, err := s.ChatGPTStatus(ctx)
+	if err != nil {
+		return AIProviderInfo{}, err
+	}
+	return AIProviderInfo{Provider: gen.Name(), Mode: gen.Mode(), Model: gen.Model(), Label: "ChatGPT", ChatGPT: chatgpt}, nil
 }
 
 // CreateGeneration builds the prompt for a brief. In API mode it also runs the
-// generation and parses the answer.
-func (s *Service) CreateGeneration(ctx context.Context, brief ai.Brief, campaignID *uuid.UUID) (GenerationView, error) {
+// generation and parses the answer; manual forces the copy-and-paste flow.
+func (s *Service) CreateGeneration(ctx context.Context, brief ai.Brief, campaignID *uuid.UUID, manual bool) (GenerationView, error) {
 	if strings.TrimSpace(brief.CampaignGoal) == "" && strings.TrimSpace(brief.ValueProposition) == "" {
 		return GenerationView{}, apperr.Validation("brief is invalid", apperr.FieldError{Field: "campaign_goal", Message: "describe the goal or the value proposition"})
 	}
@@ -61,32 +70,40 @@ func (s *Service) CreateGeneration(ctx context.Context, brief ai.Brief, campaign
 			return GenerationView{}, err
 		}
 	}
-	prompt, err := s.ai.BuildPrompt(brief)
+	gen := s.generator(ctx)
+	if manual {
+		gen = ai.NewManual()
+	}
+	prompt, err := gen.BuildPrompt(brief)
 	if err != nil {
 		return GenerationView{}, apperr.Internal(err)
 	}
 	briefRaw, _ := json.Marshal(brief)
 	status := campaign.GenerationAwaitingPaste
-	if s.ai.Mode() == ai.ModeAPI {
+	if gen.Mode() == ai.ModeAPI {
 		status = campaign.GenerationPromptBuilt
 	}
 	row, err := s.store.CreateAIGeneration(ctx, dbgen.CreateAIGenerationParams{
-		ID: ids.New(), Provider: s.ai.Name(), Model: campaign.Optional(s.ai.Model()), Status: status,
+		ID: ids.New(), Provider: gen.Name(), Model: campaign.Optional(gen.Model()), Status: status,
 		CampaignID: campaign.NullUUID(campaignID), Brief: briefRaw, Prompt: prompt.Text, PromptVersion: ai.PromptVersion,
 	})
 	if err != nil {
 		return GenerationView{}, apperr.Internal(err)
 	}
-	if s.ai.Mode() != ai.ModeAPI {
+	if gen.Mode() != ai.ModeAPI {
 		return s.generationView(row)
 	}
-	output, usage, err := s.ai.Generate(ctx, brief)
+	output, usage, err := gen.Generate(ctx, brief)
+	if err != nil && gen.Name() == campaign.AIProviderChatGPT && errors.Is(err, provider.ErrAuth) {
+		// An access token can be revoked before it expires. Refresh once and retry;
+		// only a refused refresh means the operator has to sign in again.
+		if expireErr := s.store.ExpireChatGPTAccessToken(ctx, s.now()); expireErr == nil {
+			output, usage, err = gen.Generate(ctx, brief)
+		}
+	}
 	if err != nil {
 		_ = s.store.SetAIGenerationFailed(ctx, dbgen.SetAIGenerationFailedParams{ID: row.ID, Error: campaign.Ptr(err.Error())})
-		if errors.Is(err, ai.ErrRefused) {
-			return GenerationView{}, apperr.Conflict("the model refused this brief: %s", err.Error())
-		}
-		return GenerationView{}, providerErr("the AI provider failed", err)
+		return GenerationView{}, s.generateErr(ctx, gen, err)
 	}
 	usageRaw, _ := json.Marshal(usage)
 	parsedRaw, _ := json.Marshal(output)
@@ -98,6 +115,26 @@ func (s *Service) CreateGeneration(ctx context.Context, brief ai.Brief, campaign
 		return GenerationView{}, apperr.Internal(err)
 	}
 	return s.generationView(row)
+}
+
+// generateErr maps a failed generation. The ChatGPT plan has two failures of its
+// own: a used-up cap, which is the operator's to raise and never silently billed to
+// the API key, and a revoked sign-in, which needs a new one.
+func (s *Service) generateErr(ctx context.Context, gen ai.Provider, err error) error {
+	switch {
+	case errors.Is(err, ai.ErrRefused):
+		return apperr.Conflict("the model refused this brief: %s", err.Error())
+	case errors.Is(err, ai.ErrPlanLimit):
+		return apperr.New(apperr.CodeAIPlanLimit, http.StatusTooManyRequests,
+			"your ChatGPT plan has no usage left for Karvon this week; raise the cap in ChatGPT settings or use the copy-and-paste flow").WithCause(err)
+	case errors.Is(err, errChatGPTNotConnected):
+		return apperr.ProviderAuth("ChatGPT is no longer connected; sign in with ChatGPT again").WithCause(err)
+	case gen.Name() == campaign.AIProviderChatGPT && errors.Is(err, provider.ErrAuth):
+		// Rejected even with a freshly refreshed token.
+		s.markChatGPTNeedsReconnect(ctx, err)
+		return apperr.ProviderAuth("ChatGPT rejected the sign-in; sign in with ChatGPT again").WithCause(err)
+	}
+	return providerErr("the AI provider failed", err)
 }
 
 // GetGeneration loads one generation.

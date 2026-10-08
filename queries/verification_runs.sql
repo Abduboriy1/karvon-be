@@ -1,7 +1,7 @@
 -- name: CreateVerificationRun :one
-INSERT INTO verification_runs (id, pass, filter, est_cost_cents, source_id)
+INSERT INTO verification_runs (id, pass, filter, est_cost_cents, source_id, auto)
 VALUES (sqlc.arg('id'), sqlc.arg('pass'), sqlc.arg('filter'), sqlc.arg('est_cost_cents'),
-        sqlc.narg('source_id'))
+        sqlc.narg('source_id'), sqlc.arg('auto'))
 RETURNING *;
 
 -- name: GetVerificationRun :one
@@ -55,6 +55,14 @@ WHERE (sqlc.narg('pass')::text IS NULL OR pass = sqlc.narg('pass')::text)
 
 -- name: CountActiveVerificationRuns :one
 SELECT count(*) FROM verification_runs WHERE status IN ('queued', 'running');
+
+-- name: CountRecentActiveRunsForPass :one
+-- What the auto sweep waits on. Only runs created inside the window count, so a run
+-- that wedged mid-flight cannot switch automatic verification off for good.
+SELECT count(*) FROM verification_runs
+WHERE pass = sqlc.arg('pass')
+  AND status IN ('queued', 'running')
+  AND created_at > sqlc.arg('since');
 
 -- name: LastFinishedVerificationRun :one
 SELECT * FROM verification_runs

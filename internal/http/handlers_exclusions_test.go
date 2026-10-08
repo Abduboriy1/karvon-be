@@ -113,3 +113,63 @@ func TestPreviewExclusionAlwaysReturnsSampleArrays(t *testing.T) {
 		}
 	}
 }
+
+func TestScanBrandsForwardsFiltersAndRendersSuggestions(t *testing.T) {
+	handler, deps := newTestServer(t)
+	deps.exclusions.scan = exclusion.BrandScanPage{Total: 1, Rows: []exclusion.BrandCandidate{{
+		BrandCandidate: db.BrandCandidate{Key: "hotworx.net", DisplayName: "HOTWORX - Austin", Locations: 12},
+		GroupBy:        db.BrandGroupDomain,
+		Suggested:      exclusion.Input{Kind: exclusion.KindDomain, Value: "hotworx.net", MatchMode: exclusion.MatchExact, Source: exclusion.SourceManual},
+	}}}
+	rec := do(t, handler, http.MethodGet,
+		"/api/v1/exclusions/brand-scan?group_by=name_prefix&min_locations=5&min_states=2&state=TX&state=OK&include_dismissed=true&sort=cities:desc", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	in := deps.exclusions.lastScan
+	if in.GroupBy != "name_prefix" || in.MinLocations != 5 || in.MinStates != 2 || len(in.States) != 2 ||
+		!in.IncludeDismissed || in.IncludeExcluded || in.Sort != "cities:desc" {
+		t.Fatalf("input = %+v", in)
+	}
+	payload := decodeJSONBody[struct {
+		Data []struct {
+			Key           string   `json:"key"`
+			StateList     []string `json:"state_list"`
+			SuggestedRule struct {
+				Kind  string `json:"kind"`
+				Value string `json:"value"`
+			} `json:"suggested_rule"`
+		} `json:"data"`
+	}](t, rec)
+	if len(payload.Data) != 1 || payload.Data[0].SuggestedRule.Value != "hotworx.net" || payload.Data[0].StateList == nil {
+		t.Fatalf("payload = %+v", payload)
+	}
+
+	rec = do(t, handler, http.MethodGet, "/api/v1/exclusions/brand-scan?sort=value:asc", "")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("an unknown sort returned %d", rec.Code)
+	}
+}
+
+func TestBulkCreateExclusionsReportsEachItem(t *testing.T) {
+	handler, deps := newTestServer(t)
+	deps.exclusions.bulk = []exclusion.BulkResult{
+		{Rule: &deps.exclusions.rule},
+		{Err: apperr.Conflict("domain %q is already excluded", "example.com")},
+		{Err: apperr.Validation("exclusion is invalid")},
+	}
+	rec := do(t, handler, http.MethodPost, "/api/v1/exclusions/bulk",
+		`{"items":[{"kind":"domain","value":"a.com"},{"kind":"domain","value":"b.com"},{"kind":"domain","value":"c"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(deps.exclusions.lastBulk) != 3 || deps.exclusions.lastBulk[1].Value != "b.com" {
+		t.Fatalf("input = %+v", deps.exclusions.lastBulk)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`"created":1`, `"status":"created"`, `"status":"duplicate"`, `"status":"invalid"`, `"code":"conflict"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body lacks %s: %s", want, body)
+		}
+	}
+}

@@ -10,7 +10,7 @@ import (
 )
 
 const getVerificationSettings = `-- name: GetVerificationSettings :one
-SELECT id, weights, enabled, paid_enabled, paid_threshold, paid_min_score, updated_at FROM verification_settings WHERE id = 1
+SELECT id, weights, enabled, paid_enabled, paid_threshold, paid_min_score, updated_at, auto_self_verify FROM verification_settings WHERE id = 1
 `
 
 func (q *Queries) GetVerificationSettings(ctx context.Context) (VerificationSetting, error) {
@@ -24,31 +24,34 @@ func (q *Queries) GetVerificationSettings(ctx context.Context) (VerificationSett
 		&i.PaidThreshold,
 		&i.PaidMinScore,
 		&i.UpdatedAt,
+		&i.AutoSelfVerify,
 	)
 	return i, err
 }
 
 const upsertVerificationSettings = `-- name: UpsertVerificationSettings :one
 INSERT INTO verification_settings (id, weights, enabled, paid_enabled, paid_threshold,
-                                   paid_min_score, updated_at)
+                                   paid_min_score, auto_self_verify, updated_at)
 VALUES (1, $1, $2, $3,
-        $4, $5, now())
+        $4, $5, $6, now())
 ON CONFLICT (id) DO UPDATE
     SET weights        = excluded.weights,
         enabled        = excluded.enabled,
         paid_enabled   = excluded.paid_enabled,
         paid_threshold = excluded.paid_threshold,
         paid_min_score = excluded.paid_min_score,
+        auto_self_verify = excluded.auto_self_verify,
         updated_at     = now()
-RETURNING id, weights, enabled, paid_enabled, paid_threshold, paid_min_score, updated_at
+RETURNING id, weights, enabled, paid_enabled, paid_threshold, paid_min_score, updated_at, auto_self_verify
 `
 
 type UpsertVerificationSettingsParams struct {
-	Weights       []byte
-	Enabled       []byte
-	PaidEnabled   bool
-	PaidThreshold int32
-	PaidMinScore  int32
+	Weights        []byte
+	Enabled        []byte
+	PaidEnabled    bool
+	PaidThreshold  int32
+	PaidMinScore   int32
+	AutoSelfVerify bool
 }
 
 // One row, always id 1. The service validates the weights before calling this; the
@@ -61,6 +64,7 @@ func (q *Queries) UpsertVerificationSettings(ctx context.Context, arg UpsertVeri
 		arg.PaidEnabled,
 		arg.PaidThreshold,
 		arg.PaidMinScore,
+		arg.AutoSelfVerify,
 	)
 	var i VerificationSetting
 	err := row.Scan(
@@ -71,6 +75,7 @@ func (q *Queries) UpsertVerificationSettings(ctx context.Context, arg UpsertVeri
 		&i.PaidThreshold,
 		&i.PaidMinScore,
 		&i.UpdatedAt,
+		&i.AutoSelfVerify,
 	)
 	return i, err
 }

@@ -67,15 +67,16 @@ func (w *QueryWorker) startRun(
 ) error {
 	d := w.deps
 
-	claimed, err := d.Store.ClaimProviderRunSlot(ctx, run.queryID, run.source.ID, d.Config.MaxActiveProviderRuns)
+	claimed, err := d.Store.ClaimProviderRunSlot(ctx, run.queryID, run.source.ID, int(run.source.MaxActiveRuns))
 	if err != nil {
 		return fmt.Errorf("jobs: claim run slot: %w", err)
 	}
 	if !claimed {
 		// Either the account is already running as many as it may, or another
-		// worker claimed this row first. Slots free up when a run finishes, which
-		// is noticed at the poll cadence, so that is how often to look again.
-		return river.JobSnooze(d.Config.RunPollInterval)
+		// worker claimed this row first. The query stays queued and asks again
+		// shortly, so it starts soon after any run on the account, from this job
+		// or another, finishes and gives its slot back.
+		return river.JobSnooze(d.Config.SlotWaitInterval)
 	}
 
 	handle, err := async.StartRun(ctx, run.searchQuery())

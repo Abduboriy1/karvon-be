@@ -21,10 +21,10 @@ func asyncHarness(t *testing.T, perQuery int, tune func(*fake.AsyncProvider)) (*
 	}
 	h := newHarness(t, defaultPages(), withConfig(func(c *config.Config) {
 		c.ProviderPollInterval = time.Second
-		c.ProviderMaxActiveRuns = 2
 		c.ProviderPageSize = 1000
 	}))
 	h.swapProvider(async)
+	h.mustRequest(http.MethodPut, "/api/v1/sources/"+apifySourceID, `{"max_active_runs":2}`, http.StatusOK)
 	return h, async
 }
 

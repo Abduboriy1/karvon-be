@@ -21,6 +21,11 @@ func (s *Server) ListCampaigns(w http.ResponseWriter, r *http.Request, params ge
 			filter.Statuses = append(filter.Statuses, string(status))
 		}
 	}
+	if params.Source != nil {
+		for _, source := range *params.Source {
+			filter.Sources = append(filter.Sources, string(source))
+		}
+	}
 	if params.IncludeArchived != nil {
 		filter.IncludeArchived = *params.IncludeArchived
 	}
@@ -163,6 +168,15 @@ func (s *Server) SyncCampaign(w http.ResponseWriter, r *http.Request, id gen.IdP
 		return
 	}
 	// 202 with no body: reconciliation is queued, not done.
+	writeJSON(w, r, http.StatusAccepted, nil)
+}
+
+// SyncCampaigns implements POST /campaigns/sync.
+func (s *Server) SyncCampaigns(w http.ResponseWriter, r *http.Request) {
+	if err := s.campaigns.SyncCampaigns(r.Context()); err != nil {
+		WriteError(w, r, err)
+		return
+	}
 	writeJSON(w, r, http.StatusAccepted, nil)
 }
 

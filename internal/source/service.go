@@ -29,6 +29,14 @@ import (
 // MaxKeyLength bounds what a client may send as an API key.
 const MaxKeyLength = 500
 
+// Bounds on a source's concurrent vendor runs, matching the column's check. A run
+// past the vendor plan's memory limit is refused by the vendor, so the useful value
+// is the plan's memory divided by the memory one run is given.
+const (
+	MinActiveRuns = 1
+	MaxActiveRuns = 64
+)
+
 // probeQuery is the cheapest call that still proves a key works.
 var probeQuery = provider.SearchQuery{Term: "coffee", City: "New York", State: "NY", Max: 1}
 
@@ -96,8 +104,11 @@ type UpdateInput struct {
 	Name           *string
 	CostPer1kCents *int
 	Enabled        *bool
-	KeyPresent     bool
-	APIKey         *string
+	// MaxActiveRuns caps how many vendor runs this account has in flight at once,
+	// across every job. Only a Maps provider reads it.
+	MaxActiveRuns *int
+	KeyPresent    bool
+	APIKey        *string
 }
 
 // Update stores new provider settings, encrypting a supplied key.
@@ -120,6 +131,11 @@ func (s *Service) Update(ctx context.Context, id uuid.UUID, in UpdateInput) (dbg
 		params.CostPer1kCents = &cost
 	}
 	params.Enabled = in.Enabled
+	if in.MaxActiveRuns != nil {
+		// validate() has already bounded this to [MinActiveRuns, MaxActiveRuns].
+		runs := int32(*in.MaxActiveRuns) //nolint:gosec // G115: range-checked above
+		params.MaxActiveRuns = &runs
+	}
 
 	if in.KeyPresent {
 		params.SetKey = true
@@ -152,6 +168,12 @@ func (in UpdateInput) validate() error {
 	}
 	if in.CostPer1kCents != nil && (*in.CostPer1kCents < 0 || *in.CostPer1kCents > 1_000_000) {
 		fields = append(fields, apperr.FieldError{Field: "cost_per_1k_cents", Message: "must be between 0 and 1000000"})
+	}
+	if in.MaxActiveRuns != nil && (*in.MaxActiveRuns < MinActiveRuns || *in.MaxActiveRuns > MaxActiveRuns) {
+		fields = append(fields, apperr.FieldError{
+			Field:   "max_active_runs",
+			Message: fmt.Sprintf("must be between %d and %d", MinActiveRuns, MaxActiveRuns),
+		})
 	}
 	if in.APIKey != nil && len(*in.APIKey) > MaxKeyLength {
 		fields = append(fields, apperr.FieldError{

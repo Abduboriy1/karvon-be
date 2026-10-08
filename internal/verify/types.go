@@ -195,6 +195,11 @@ type RunFilter struct {
 	// may pay for it however low the free checks scored it. It is never read from
 	// the wire, so a bulk run cannot use it.
 	SkipScoreFloor bool `json:"skip_score_floor,omitempty"`
+	// Unscored keeps only addresses that have never been through the free stage. The
+	// automatic sweep sets it, so a run covers what scrapes found since the last one
+	// rather than re-scoring the whole list. Like SkipScoreFloor it is never read
+	// from the wire.
+	Unscored bool `json:"unscored,omitempty"`
 }
 
 // Estimate is what a run would cost before it is started.

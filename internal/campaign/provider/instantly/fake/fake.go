@@ -175,6 +175,38 @@ func (c *Client) GetCampaign(_ context.Context, id string) (instantly.Campaign, 
 	return campaign, nil
 }
 
+// ListCampaigns implements instantly.Client, paging by id.
+func (c *Client) ListCampaigns(_ context.Context, startingAfter string) (instantly.CampaignPage, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.record("ListCampaigns", startingAfter); err != nil {
+		return instantly.CampaignPage{}, err
+	}
+	campaigns := make([]instantly.Campaign, 0, len(c.Campaigns))
+	for _, campaign := range c.Campaigns {
+		campaigns = append(campaigns, campaign)
+	}
+	sort.Slice(campaigns, func(i, j int) bool { return campaigns[i].ID < campaigns[j].ID })
+	items, next := paginate(campaigns, func(c instantly.Campaign) string { return c.ID }, 0, startingAfter)
+	return instantly.CampaignPage{Items: items, NextStartingAfter: next}, nil
+}
+
+// PutCampaign stores a campaign as if it had been started in Instantly's own app,
+// with its analytics, safely alongside a running sync.
+func (c *Client) PutCampaign(campaign instantly.Campaign, analytics instantly.CampaignAnalytics) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Campaigns == nil {
+		c.Campaigns = map[string]instantly.Campaign{}
+	}
+	if c.Analytics == nil {
+		c.Analytics = map[string]instantly.CampaignAnalytics{}
+	}
+	c.Campaigns[campaign.ID] = campaign
+	analytics.CampaignID = campaign.ID
+	c.Analytics[campaign.ID] = analytics
+}
+
 // UpdateCampaign implements instantly.Client.
 func (c *Client) UpdateCampaign(_ context.Context, id string, in instantly.UpdateCampaignInput) (instantly.Campaign, error) {
 	c.mu.Lock()
@@ -561,6 +593,16 @@ func (c *Client) ListEmails(_ context.Context, in instantly.ListEmailsInput) (in
 		if !emailTypeMatches(in.EmailType, email.UEType) {
 			continue
 		}
+		if thread, ok := strings.CutPrefix(in.Search, "thread:"); ok {
+			if email.ThreadID != thread {
+				continue
+			}
+		} else if in.Search != "" && normalize(email.LeadEmail) != normalize(in.Search) {
+			continue
+		}
+		if in.MinTimestampCreated != nil && !email.TimestampCreated.After(*in.MinTimestampCreated) {
+			continue
+		}
 		matching = append(matching, email)
 	}
 	sort.Slice(matching, func(i, j int) bool {
@@ -589,6 +631,29 @@ func emailTypeMatches(want string, ueType int) bool {
 	default:
 		return false
 	}
+}
+
+// AddEmails puts emails in the fake Unibox, safely alongside a running sync.
+func (c *Client) AddEmails(emails ...instantly.Email) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Emails = append(c.Emails, emails...)
+}
+
+// MarkThreadRead implements instantly.Client.
+func (c *Client) MarkThreadRead(_ context.Context, threadID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.record("MarkThreadRead", threadID); err != nil {
+		return err
+	}
+	unread := 0
+	for i := range c.Emails {
+		if c.Emails[i].ThreadID == threadID {
+			c.Emails[i].IsUnread = &unread
+		}
+	}
+	return nil
 }
 
 /* ----------------------------------------------------------------- webhooks */

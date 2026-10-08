@@ -148,7 +148,21 @@ func Deref[T any](p *T) T {
 	return *p
 }
 
-// Int32 narrows an int to what a Postgres integer column accepts.
+// SignedInt32 narrows an int that may be negative, such as an Instantly interest
+// code (not interested is -1), clamping only at the column's range.
+func SignedInt32(v int) int32 {
+	switch {
+	case v < -1<<31:
+		return -1 << 31
+	case v > 1<<31-1:
+		return 1<<31 - 1
+	default:
+		return int32(v)
+	}
+}
+
+// Int32 narrows a count to what a Postgres integer column accepts. Negative
+// values become zero, so it must not be used for codes that can be negative.
 func Int32(v int) int32 {
 	switch {
 	case v < 0:

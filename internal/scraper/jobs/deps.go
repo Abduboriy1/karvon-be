@@ -34,11 +34,11 @@ type Config struct {
 	// RunPollInterval is how long a worker waits between asking a vendor whether a
 	// long run has finished. The worker holds nothing open while it waits.
 	RunPollInterval time.Duration
-	// MaxActiveProviderRuns caps how many runs one vendor account has in flight.
-	// Queue concurrency cannot do this job: a polling worker gives its slot back
-	// between polls, so without this cap every location would start at once and the
-	// account would hit its own memory limit.
-	MaxActiveProviderRuns int
+	// SlotWaitInterval is how often a query that found every run slot taken asks
+	// again. It is shorter than the poll interval so a queued location starts soon
+	// after another finishes; the claim is one small locked count, so it is cheap.
+	// The cap itself is the source's max_active_runs, which the operator sets.
+	SlotWaitInterval time.Duration
 	// MaxRunDuration is when a run is treated as stuck and aborted, so that a run
 	// nobody is watching cannot keep spending indefinitely.
 	MaxRunDuration time.Duration
@@ -50,11 +50,11 @@ type Config struct {
 
 // Defaults for the asynchronous run settings.
 const (
-	defaultRunPollInterval       = time.Minute
-	defaultMaxActiveProviderRuns = 6
-	defaultMaxRunDuration        = 12 * time.Hour
-	defaultRunPageSize           = 1000
-	defaultSocialPageTimeout     = 3 * time.Minute
+	defaultRunPollInterval   = time.Minute
+	defaultSlotWaitInterval  = 15 * time.Second
+	defaultMaxRunDuration    = 12 * time.Hour
+	defaultRunPageSize       = 1000
+	defaultSocialPageTimeout = 3 * time.Minute
 )
 
 // withDefaults fills in the run settings a caller left at zero.
@@ -62,8 +62,8 @@ func (c Config) withDefaults() Config {
 	if c.RunPollInterval <= 0 {
 		c.RunPollInterval = defaultRunPollInterval
 	}
-	if c.MaxActiveProviderRuns <= 0 {
-		c.MaxActiveProviderRuns = defaultMaxActiveProviderRuns
+	if c.SlotWaitInterval <= 0 {
+		c.SlotWaitInterval = min(defaultSlotWaitInterval, c.RunPollInterval)
 	}
 	if c.MaxRunDuration <= 0 {
 		c.MaxRunDuration = defaultMaxRunDuration

@@ -43,6 +43,8 @@ func NewRouter(server *Server, cfg RouterConfig) http.Handler {
 		"/healthz",
 		BasePath + "/healthz",
 		BasePath + "/openapi.json",
+		// OpenAI sends the browser here; the single-use state authenticates it.
+		BasePath + "/ai/chatgpt/callback",
 	}
 	// Provider webhooks authenticate themselves: see middleware.PublicPrefix.
 	auth := middleware.NewAuthenticator(cfg.APIKey, publicPaths...).

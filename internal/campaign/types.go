@@ -33,6 +33,18 @@ const (
 	CampaignArchived  = "archived"
 )
 
+// Campaign sources: where a campaign was started.
+const (
+	// CampaignSourceKarvon is a campaign built here and launched into Instantly.
+	CampaignSourceKarvon = "karvon"
+	// CampaignSourceInstantly is a campaign started in Instantly's own app and
+	// imported by the campaign sync. It is mirrored, never edited from here.
+	CampaignSourceInstantly = "instantly"
+)
+
+// CampaignSources lists every campaign source the schema accepts.
+var CampaignSources = []string{CampaignSourceKarvon, CampaignSourceInstantly}
+
 // CampaignStatuses lists every campaign status the schema accepts.
 var CampaignStatuses = []string{CampaignDraft, CampaignReady, CampaignLaunching, CampaignActive,
 	CampaignPaused, CampaignCompleted, CampaignFailed, CampaignArchived}
@@ -258,8 +270,9 @@ var SyncStatuses = []string{SyncQueued, SyncSyncing, SyncSynced, SyncFailed}
 
 // AI providers and generation statuses.
 const (
-	AIProviderManual = "manual_chatgpt"
-	AIProviderOpenAI = "openai_api"
+	AIProviderManual  = "manual_chatgpt"
+	AIProviderOpenAI  = "openai_api"
+	AIProviderChatGPT = "chatgpt_plan"
 
 	GenerationPromptBuilt   = "prompt_built"
 	GenerationAwaitingPaste = "awaiting_paste"
@@ -279,13 +292,45 @@ const (
 	SyncKindInstantlyLeadsFull    = "instantly_leads_full"
 	SyncKindInstantlyAccounts     = "instantly_accounts"
 	SyncKindInstantlyReplay       = "instantly_webhook_replay"
+	SyncKindInstantlyInbox        = "instantly_inbox"
 	SyncKindMailchimpMembers      = "mailchimp_members"
 	SyncKindMailchimpAudiences    = "mailchimp_audiences"
 )
 
 // SyncKinds lists every sync run kind the schema accepts.
 var SyncKinds = []string{SyncKindInstantlyCampaign, SyncKindInstantlyCampaignsAll, SyncKindInstantlyLeadsFull,
-	SyncKindInstantlyAccounts, SyncKindInstantlyReplay, SyncKindMailchimpMembers, SyncKindMailchimpAudiences}
+	SyncKindInstantlyAccounts, SyncKindInstantlyReplay, SyncKindInstantlyInbox, SyncKindMailchimpMembers,
+	SyncKindMailchimpAudiences}
+
+// Inbox email directions.
+const (
+	InboxReceived = "received"
+	InboxSent     = "sent"
+)
+
+// Outreach outcomes: one word per contacted lead for the outcomes table and its
+// export, the way Instantly groups its lead statuses. The first three come from
+// the interest status set in the Unibox; the rest describe a lead nobody labelled.
+const (
+	// OutcomeSuccessful is a meeting booked, a meeting held, or a deal won.
+	OutcomeSuccessful = "successful"
+	// OutcomePotential is a lead marked interested, or one who missed a meeting.
+	OutcomePotential = "potential"
+	// OutcomeBad is not interested, wrong person, lost, or unsubscribed.
+	OutcomeBad = "bad"
+	// OutcomeReplied is a reply nobody has labelled yet (or an out-of-office).
+	OutcomeReplied = "replied"
+	// OutcomeNoReply is a lead that was emailed and has not answered.
+	OutcomeNoReply = "no_reply"
+	// OutcomeBounced is an address that bounced.
+	OutcomeBounced = "bounced"
+	// OutcomeNotContacted is a lead that has not been emailed yet.
+	OutcomeNotContacted = "not_contacted"
+)
+
+// Outcomes lists every outreach outcome, best first.
+var Outcomes = []string{OutcomeSuccessful, OutcomePotential, OutcomeBad, OutcomeReplied, OutcomeNoReply,
+	OutcomeBounced, OutcomeNotContacted}
 
 // Analytics snapshot sources.
 const (

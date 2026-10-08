@@ -1,4 +1,5 @@
-// Package stats serves the dashboard counters and the per-job email chart.
+// Package stats serves the dashboard counters, the per-job email chart and the
+// cross-module client report.
 package stats
 
 import (
@@ -13,9 +14,16 @@ import (
 // ChartJobs is how many recent jobs the dashboard chart shows.
 const ChartJobs = 10
 
-// Service implements GET /stats/scraper.
+// Service implements GET /stats/scraper and GET /dashboard/report.
 type Service struct {
-	store *db.Store
+	store     *db.Store
+	recurring RecurringCosts
+}
+
+// WithRecurringCosts sets the monthly costs the report prorates.
+func (s *Service) WithRecurringCosts(c RecurringCosts) *Service {
+	s.recurring = c
+	return s
 }
 
 // NewService builds the stats service.

@@ -74,6 +74,11 @@ type ExclusionService interface {
 	Preview(ctx context.Context, in exclusion.Input) (exclusion.Preview, error)
 	Remove(ctx context.Context, id uuid.UUID, note string) error
 	Check(ctx context.Context, subject exclusion.Subject) (*db.ExclusionRef, error)
+	CreateBulk(ctx context.Context, in []exclusion.Input) ([]exclusion.BulkResult, error)
+	BrandScan(ctx context.Context, in exclusion.BrandScanInput) (exclusion.BrandScanPage, error)
+	Dismiss(ctx context.Context, in exclusion.DismissalInput) (dbgen.BrandScanDismissal, error)
+	Undismiss(ctx context.Context, id uuid.UUID) error
+	ListDismissals(ctx context.Context, groupBy *string, page, perPage int) (exclusion.DismissalPage, error)
 }
 
 // VerificationService is the behaviour behind /verification.
@@ -127,9 +132,10 @@ type MailboxService interface {
 	ConnectInstantly(ctx context.Context, id uuid.UUID, warmup bool) (workspace.InstantlyConnection, error)
 }
 
-// StatsService is the behaviour behind /stats/scraper.
+// StatsService is the behaviour behind /stats/scraper and /dashboard/report.
 type StatsService interface {
 	Scraper(ctx context.Context) (stats.Scraper, error)
+	Report(ctx context.Context, in stats.ReportInput) (stats.Report, error)
 }
 
 // EventStore is the read side the SSE handler needs.
@@ -158,6 +164,7 @@ type CampaignService interface {
 	PauseCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
 	ResumeCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
 	SyncCampaign(ctx context.Context, id uuid.UUID) error
+	SyncCampaigns(ctx context.Context) error
 	SetSendingAccounts(ctx context.Context, id uuid.UUID, accountIDs []uuid.UUID) ([]dbgen.SendingAccount, error)
 	ListCampaignVariants(ctx context.Context, id uuid.UUID) ([]dbgen.ListCampaignVariantsRow, error)
 	SetCampaignVariants(ctx context.Context, id uuid.UUID, items []campaignsvc.VariantWeight) ([]dbgen.ListCampaignVariantsRow, error)
@@ -198,8 +205,11 @@ type CampaignService interface {
 	PreviewAssembly(ctx context.Context, refs []campaignsvc.SlotRef, contactID *uuid.UUID) (campaignsvc.Preview, error)
 
 	// AI generator.
-	AIProviderInfo() campaignsvc.AIProviderInfo
-	CreateGeneration(ctx context.Context, brief ai.Brief, campaignID *uuid.UUID) (campaignsvc.GenerationView, error)
+	AIProviderInfo(ctx context.Context) (campaignsvc.AIProviderInfo, error)
+	StartChatGPTSignIn(ctx context.Context) (string, error)
+	FinishChatGPTSignIn(ctx context.Context, state, code, oauthErr string) error
+	DisconnectChatGPT(ctx context.Context) error
+	CreateGeneration(ctx context.Context, brief ai.Brief, campaignID *uuid.UUID, manual bool) (campaignsvc.GenerationView, error)
 	GetGeneration(ctx context.Context, id uuid.UUID) (campaignsvc.GenerationView, error)
 	ListGenerations(ctx context.Context, campaignID *uuid.UUID, page, perPage int) (campaignsvc.Page[campaignsvc.GenerationView], error)
 	ParseGeneration(ctx context.Context, id uuid.UUID, raw string) (campaignsvc.GenerationView, error)
@@ -237,6 +247,15 @@ type CampaignService interface {
 	GetComponentAnalytics(ctx context.Context, componentType string, campaignID *uuid.UUID, since *time.Time) ([]campaignsvc.ComponentAnalytics, error)
 	GetSendingAccountAnalytics(ctx context.Context) ([]campaignsvc.AccountAnalytics, error)
 	GetFunnel(ctx context.Context, campaignID *uuid.UUID) ([]campaignsvc.FunnelStep, error)
+
+	// Inbox and outreach outcomes.
+	ListInbox(ctx context.Context, f db.InboxFilter, sort string, page, perPage int) (campaignsvc.Page[db.InboxRow], error)
+	InboxUnreadCount(ctx context.Context) (int64, error)
+	GetThread(ctx context.Context, threadID string, refresh bool) (campaignsvc.Thread, error)
+	MarkThreadRead(ctx context.Context, threadID string) error
+	SyncInbox(ctx context.Context) error
+	ListOutreach(ctx context.Context, f db.OutreachFilter, sort string, page, perPage int) (campaignsvc.OutreachPage, error)
+	ExportOutreach(ctx context.Context, f db.OutreachFilter, sort string, dst io.Writer, flush func()) (int, error)
 
 	// Inbound webhooks.
 	AuthenticateInstantlyWebhook(ctx context.Context, token, secret string) error

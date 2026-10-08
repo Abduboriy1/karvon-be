@@ -350,6 +350,10 @@ func (s *Service) baseFilter(filter RunFilter) db.VerificationFilter {
 	if filter.Scope == ScopeSelection {
 		out.IDs = filter.IDs
 	}
+	if filter.Unscored {
+		unscored := false
+		out.FreeComplete = &unscored
+	}
 	return out
 }
 
@@ -526,6 +530,7 @@ func (s *Service) CreateRun(ctx context.Context, in CreateRunInput) (dbgen.Verif
 			Filter:       filterJSON,
 			EstCostCents: estimate.EstCostCents,
 			SourceID:     sourceID,
+			Auto:         false,
 		}); err != nil {
 			return fmt.Errorf("verify: create run: %w", err)
 		}

@@ -15,6 +15,7 @@ type sourceUpdateRequest struct {
 	Name           *string         `json:"name" validate:"omitempty,min=1,max=100"`
 	CostPer1kCents *int            `json:"cost_per_1k_cents" validate:"omitempty,gte=0,lte=1000000"`
 	Enabled        *bool           `json:"enabled"`
+	MaxActiveRuns  *int            `json:"max_active_runs" validate:"omitempty,gte=1,lte=64"`
 	APIKey         json.RawMessage `json:"api_key"`
 }
 
@@ -58,6 +59,7 @@ func (s *Server) UpdateSource(w http.ResponseWriter, r *http.Request, id gen.IdP
 		Name:           req.Name,
 		CostPer1kCents: req.CostPer1kCents,
 		Enabled:        req.Enabled,
+		MaxActiveRuns:  req.MaxActiveRuns,
 	}
 	if len(req.APIKey) > 0 {
 		in.KeyPresent = true

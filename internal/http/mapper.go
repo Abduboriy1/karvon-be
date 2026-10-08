@@ -257,6 +257,7 @@ func toAPISource(row dbgen.Source) gen.Source {
 		HasKey:         len(row.ApiKeyEnc) > 0,
 		CostPer1kCents: int(row.CostPer1kCents),
 		Enabled:        row.Enabled,
+		MaxActiveRuns:  int(row.MaxActiveRuns),
 		LastTestedAt:   utcPtr(row.LastTestedAt),
 		LastTestOk:     row.LastTestOk,
 		CreatedAt:      utc(row.CreatedAt),
@@ -488,24 +489,32 @@ func toAPISettings(settings verify.Settings) gen.VerificationSettings {
 		enabled[key] = on
 	}
 	return gen.VerificationSettings{
-		Weights:       weights,
-		Enabled:       enabled,
-		PaidEnabled:   settings.PaidEnabled,
-		PaidThreshold: settings.PaidThreshold,
-		PaidMinScore:  settings.PaidMinScore,
+		Weights:        weights,
+		Enabled:        enabled,
+		PaidEnabled:    settings.PaidEnabled,
+		PaidThreshold:  settings.PaidThreshold,
+		PaidMinScore:   settings.PaidMinScore,
+		AutoSelfVerify: &settings.AutoSelfVerify,
 	}
 }
 
 // toDomainSettings maps a submitted settings body onto the domain type. Validation
 // happens in the domain, so unknown keys and impossible totals produce the same
 // field errors whatever route they arrive by.
-func toDomainSettings(in gen.VerificationSettingsUpdate) verify.Settings {
+//
+// auto_self_verify is optional on the wire so a client written before it existed
+// keeps working; leaving it out keeps the current value.
+func toDomainSettings(in gen.VerificationSettingsUpdate, current verify.Settings) verify.Settings {
 	out := verify.Settings{
-		Weights:       make(map[verify.Key]int, len(in.Weights)),
-		Enabled:       make(map[verify.Key]bool, len(in.Enabled)),
-		PaidEnabled:   in.PaidEnabled,
-		PaidThreshold: in.PaidThreshold,
-		PaidMinScore:  in.PaidMinScore,
+		Weights:        make(map[verify.Key]int, len(in.Weights)),
+		Enabled:        make(map[verify.Key]bool, len(in.Enabled)),
+		PaidEnabled:    in.PaidEnabled,
+		PaidThreshold:  in.PaidThreshold,
+		PaidMinScore:   in.PaidMinScore,
+		AutoSelfVerify: current.AutoSelfVerify,
+	}
+	if in.AutoSelfVerify != nil {
+		out.AutoSelfVerify = *in.AutoSelfVerify
 	}
 	for key, weight := range in.Weights {
 		out.Weights[key] = weight
@@ -549,6 +558,7 @@ func toAPIVerificationRun(row dbgen.VerificationRun) gen.VerificationRun {
 		CreatedAt:    utc(row.CreatedAt),
 		StartedAt:    utcPtr(row.StartedAt),
 		FinishedAt:   utcPtr(row.FinishedAt),
+		Auto:         row.Auto,
 	}
 	if row.SourceID.Valid {
 		id := row.SourceID.UUID

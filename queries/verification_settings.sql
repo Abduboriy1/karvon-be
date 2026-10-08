@@ -6,14 +6,15 @@ SELECT * FROM verification_settings WHERE id = 1;
 -- column constraints only catch the thresholds, because "the weights total 100" is
 -- not expressible against a JSONB object without a function.
 INSERT INTO verification_settings (id, weights, enabled, paid_enabled, paid_threshold,
-                                   paid_min_score, updated_at)
+                                   paid_min_score, auto_self_verify, updated_at)
 VALUES (1, sqlc.arg('weights'), sqlc.arg('enabled'), sqlc.arg('paid_enabled'),
-        sqlc.arg('paid_threshold'), sqlc.arg('paid_min_score'), now())
+        sqlc.arg('paid_threshold'), sqlc.arg('paid_min_score'), sqlc.arg('auto_self_verify'), now())
 ON CONFLICT (id) DO UPDATE
     SET weights        = excluded.weights,
         enabled        = excluded.enabled,
         paid_enabled   = excluded.paid_enabled,
         paid_threshold = excluded.paid_threshold,
         paid_min_score = excluded.paid_min_score,
+        auto_self_verify = excluded.auto_self_verify,
         updated_at     = now()
 RETURNING *;

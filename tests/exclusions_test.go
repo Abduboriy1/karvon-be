@@ -261,3 +261,52 @@ func TestPreviewMeasuresARuleWithoutSavingIt(t *testing.T) {
 		t.Errorf("a subdomain address of an excluded domain checked as %s", rec.Body.String())
 	}
 }
+
+func TestContainsRulesCoverEveryLocationOfABrand(t *testing.T) {
+	h, _ := seededHarness(t)
+
+	// A fragment of the host catches every location's own domain.
+	rec := h.mustRequest(http.MethodPost, "/api/v1/exclusions/preview",
+		`{"kind":"domain","value":"Barbell","match_mode":"contains"}`, http.StatusOK)
+	preview := decodeBody[struct {
+		Value     string `json:"value"`
+		MatchMode string `json:"match_mode"`
+		Affected  struct {
+			Businesses int64 `json:"businesses"`
+		} `json:"affected"`
+	}](t, rec)
+	if preview.Value != "barbell" || preview.MatchMode != "contains" || preview.Affected.Businesses != 1 {
+		t.Errorf("the domain contains preview is %+v", preview)
+	}
+	rule := h.exclude(`{"kind":"domain","value":"barbell","match_mode":"contains"}`)
+	if rule.Affected.Businesses != 1 {
+		t.Errorf("the domain contains rule covers %+v", rule.Affected)
+	}
+	rec = h.mustRequest(http.MethodPost, "/api/v1/exclusions/check", `{"domain":"https://northbarbellclub.org"}`, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), `"excluded":true`) {
+		t.Errorf("another location's domain checked as %s", rec.Body.String())
+	}
+	rec = h.mustRequest(http.MethodPost, "/api/v1/exclusions/check", `{"email":"info@barbellsouth.com"}`, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), `"excluded":true`) {
+		t.Errorf("an address at another location checked as %s", rec.Body.String())
+	}
+
+	// Company words match anywhere in the name, but only as whole words.
+	rule = h.exclude(`{"kind":"company","value":"Works Gym","match_mode":"contains"}`)
+	if rule.Value != "works gym" || rule.Affected.Businesses != 1 {
+		t.Errorf("the company contains rule is %+v", rule)
+	}
+	rec = h.mustRequest(http.MethodPost, "/api/v1/exclusions/check", `{"company":"Downtown Iron Works Gym - East"}`, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), `"excluded":true`) {
+		t.Errorf("a location name checked as %s", rec.Body.String())
+	}
+	rec = h.mustRequest(http.MethodPost, "/api/v1/exclusions/check", `{"company":"Fireworks Gymnastics"}`, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), `"excluded":false`) {
+		t.Errorf("a name containing the words only inside others checked as %s", rec.Body.String())
+	}
+
+	rec = h.request(http.MethodPost, "/api/v1/exclusions", `{"kind":"domain","value":"com","match_mode":"contains"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("a top-level domain fragment returned %d, want 422", rec.Code)
+	}
+}

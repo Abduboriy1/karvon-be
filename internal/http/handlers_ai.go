@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/bory/karvon-be/internal/apperr"
 	"github.com/bory/karvon-be/internal/campaign"
@@ -39,6 +41,7 @@ type aiBriefRequest struct {
 type aiGenerationCreateRequest struct {
 	Brief      aiBriefRequest `json:"brief"`
 	CampaignID *gen.IdPath    `json:"campaign_id"`
+	Manual     bool           `json:"manual"`
 }
 
 // aiParseRequest mirrors the spec's AIParseRequest.
@@ -56,7 +59,62 @@ type aiImportRequest struct {
 
 // GetAiProvider implements GET /ai/provider.
 func (s *Server) GetAiProvider(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, r, http.StatusOK, toAPIAIProvider(s.campaigns.AIProviderInfo()))
+	info, err := s.campaigns.AIProviderInfo(r.Context())
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toAPIAIProvider(info))
+}
+
+// ConnectChatGPT implements POST /ai/chatgpt/connect.
+func (s *Server) ConnectChatGPT(w http.ResponseWriter, r *http.Request) {
+	authorizeURL, err := s.campaigns.StartChatGPTSignIn(r.Context())
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, gen.ChatGPTConnectStart{AuthorizeUrl: authorizeURL})
+}
+
+// DisconnectChatGPT implements DELETE /ai/chatgpt.
+func (s *Server) DisconnectChatGPT(w http.ResponseWriter, r *http.Request) {
+	if err := s.campaigns.DisconnectChatGPT(r.Context()); err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ChatGPTCallback implements GET /ai/chatgpt/callback. A browser lands here, so
+// every outcome is a redirect to the dashboard; the reason codes are fixed strings
+// and the detail stays in the log.
+func (s *Server) ChatGPTCallback(w http.ResponseWriter, r *http.Request, params gen.ChatGPTCallbackParams) {
+	err := s.campaigns.FinishChatGPTSignIn(r.Context(), deref(params.State), deref(params.Code), deref(params.Error))
+	query := url.Values{"chatgpt": {"connected"}}
+	if err != nil {
+		reason := campaignsvc.SignInFailed
+		var signInErr *campaignsvc.ChatGPTSignInError
+		if errors.As(err, &signInErr) {
+			reason = signInErr.Reason
+		}
+		s.log.Warn("sign in with chatgpt failed", "reason", reason, "error", err)
+		query = url.Values{"chatgpt": {"error"}, "reason": {reason}}
+	}
+
+	target, parseErr := url.Parse(s.cfg.ChatGPTReturnURL)
+	if parseErr != nil || (target.Scheme != "http" && target.Scheme != "https") {
+		// No dashboard to return to: say what happened in plain text.
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, "Sign in with ChatGPT: "+query.Encode()+"\n")
+		return
+	}
+	q := target.Query()
+	for k, v := range query {
+		q[k] = v
+	}
+	target.RawQuery = q.Encode()
+	http.Redirect(w, r, target.String(), http.StatusFound)
 }
 
 // ListAiGenerations implements GET /ai/generations.
@@ -91,7 +149,7 @@ func (s *Server) CreateAiGeneration(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	view, err := s.campaigns.CreateGeneration(r.Context(), aiBriefFromRequest(req.Brief), req.CampaignID)
+	view, err := s.campaigns.CreateGeneration(r.Context(), aiBriefFromRequest(req.Brief), req.CampaignID, req.Manual)
 	if err != nil {
 		WriteError(w, r, err)
 		return

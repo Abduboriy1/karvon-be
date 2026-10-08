@@ -136,6 +136,10 @@ type Settings struct {
 	// PaidMinScore is the floor: an address below it is rubbish and is never
 	// billed. This is the pre-existing Pass 2 gate and defaults to the same value.
 	PaidMinScore int
+	// AutoSelfVerify runs the free self pass on its own: a periodic sweep starts a
+	// self run over every address that has never been scored, so emails are verified
+	// as scrapes find them. The paid pass is never started automatically.
+	AutoSelfVerify bool
 }
 
 // DefaultSettings is the policy a fresh install starts from. The weights follow the
@@ -160,9 +164,10 @@ func DefaultSettings() Settings {
 			provider.KeyReacher:     false,
 			provider.KeyPaid:        true,
 		},
-		PaidEnabled:   true,
-		PaidThreshold: FreeMaxScore + 1,
-		PaidMinScore:  MinScoreYellow,
+		PaidEnabled:    true,
+		PaidThreshold:  FreeMaxScore + 1,
+		PaidMinScore:   MinScoreYellow,
+		AutoSelfVerify: true,
 	}
 }
 

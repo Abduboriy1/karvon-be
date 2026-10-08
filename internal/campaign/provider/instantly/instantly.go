@@ -161,6 +161,21 @@ func (c *HTTPClient) GetCampaign(ctx context.Context, id string) (Campaign, erro
 	return out, nil
 }
 
+// campaignPageSize is smaller than pageSize: a campaign carries its whole
+// sequence, so a full page of long sequences could exceed the body cap.
+const campaignPageSize = 25
+
+// ListCampaigns implements Client.
+func (c *HTTPClient) ListCampaigns(ctx context.Context, startingAfter string) (CampaignPage, error) {
+	query := url.Values{"limit": {strconv.Itoa(campaignPageSize)}}
+	setIf(query, "starting_after", startingAfter)
+	var out CampaignPage
+	if err := c.do(ctx, http.MethodGet, "/campaigns", query, nil, &out); err != nil {
+		return CampaignPage{}, err
+	}
+	return out, nil
+}
+
 // UpdateCampaign implements Client.
 func (c *HTTPClient) UpdateCampaign(ctx context.Context, id string, in UpdateCampaignInput) (Campaign, error) {
 	body, err := overlay(in, in.Settings)
@@ -370,6 +385,10 @@ func (c *HTTPClient) ListEmails(ctx context.Context, in ListEmailsInput) (EmailP
 	setIf(query, "lead", in.Lead)
 	setIf(query, "starting_after", in.StartingAfter)
 	setIf(query, "sort_order", in.SortOrder)
+	setIf(query, "search", in.Search)
+	if in.MinTimestampCreated != nil {
+		query.Set("min_timestamp_created", in.MinTimestampCreated.UTC().Format(time.RFC3339Nano))
+	}
 	if in.Limit > 0 {
 		query.Set("limit", strconv.Itoa(in.Limit))
 	}
@@ -378,6 +397,11 @@ func (c *HTTPClient) ListEmails(ctx context.Context, in ListEmailsInput) (EmailP
 		return EmailPage{}, err
 	}
 	return out, nil
+}
+
+// MarkThreadRead implements Client.
+func (c *HTTPClient) MarkThreadRead(ctx context.Context, threadID string) error {
+	return c.do(ctx, http.MethodPost, "/emails/threads/"+url.PathEscape(threadID)+"/mark-as-read", nil, nil, nil)
 }
 
 /* ----------------------------------------------------------------- webhooks */

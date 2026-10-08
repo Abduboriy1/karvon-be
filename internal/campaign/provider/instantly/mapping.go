@@ -84,6 +84,24 @@ func CampaignStatusLabel(code int) string {
 	}
 }
 
+// CampaignStatus maps an Instantly campaign status code onto our campaign status
+// vocabulary, for a campaign imported from Instantly. The health codes (unhealthy
+// accounts, bounce protection, a suspended account) and running subsequences all
+// describe a campaign Instantly still considers started, so they read as active;
+// the code itself is kept in instantly_status for the detail.
+func CampaignStatus(code int) string {
+	switch code {
+	case CampaignStatusDraft:
+		return campaign.CampaignDraft
+	case CampaignStatusPaused:
+		return campaign.CampaignPaused
+	case CampaignStatusCompleted:
+		return campaign.CampaignCompleted
+	default:
+		return campaign.CampaignActive
+	}
+}
+
 // AccountStatusLabel names a sending account status code.
 func AccountStatusLabel(code int) string {
 	switch code {

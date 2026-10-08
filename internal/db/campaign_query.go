@@ -15,7 +15,9 @@ import (
 // CampaignFilter is the filter behind GET /campaigns.
 type CampaignFilter struct {
 	Statuses []string
-	Q        *string
+	// Sources keeps campaigns started in these places ("karvon", "instantly").
+	Sources []string
+	Q       *string
 	// IncludeArchived keeps archived campaigns; by default they are hidden.
 	IncludeArchived bool
 }
@@ -25,6 +27,7 @@ type CampaignRow struct {
 	ID                    uuid.UUID
 	Name                  string
 	Status                string
+	Source                string
 	Brief                 []byte
 	Schedule              []byte
 	Settings              []byte
@@ -74,18 +77,27 @@ var campaignSorts = map[string]sortSpec{
 // CampaignSortKeys lists the accepted values of the `sort` parameter.
 func CampaignSortKeys() []string { return sortKeys(campaignSorts) }
 
-const campaignSelect = `
-    c.id, c.name, c.status, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version,
+// importedOr picks a counter for the campaign list. A campaign started in
+// Instantly has no leads or sends here, so its counter is read from the latest
+// Instantly analytics snapshot instead of counted locally.
+func importedOr(metric, local string) string {
+	return `CASE WHEN c.source = 'instantly' THEN COALESCE((SELECT (snap.metrics->>'` + metric + `')::bigint
+        FROM campaign_analytics_snapshots snap WHERE snap.campaign_id = c.id AND snap.source = 'instantly'
+        ORDER BY snap.day DESC LIMIT 1), 0) ELSE (` + local + `) END`
+}
+
+var campaignSelect = `
+    c.id, c.name, c.status, c.source, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version,
     c.instantly_campaign_id, c.instantly_status, c.instantly_sending_status, c.launched_at, c.paused_at,
     c.completed_at, c.archived_at, c.last_synced_at, c.last_sync_error, c.error, c.leads_total, c.leads_pushed,
     c.created_at, c.updated_at,
-    (SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.last_contacted_at IS NOT NULL)::bigint,
-    (SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.reply_count > 0)::bigint,
-    (SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.interest_status IN (1,2,3,4))::bigint,
-    (SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.status = 'bounced')::bigint,
-    (SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.status = 'unsubscribed')::bigint,
-    (SELECT count(*) FROM email_sends s WHERE s.campaign_id = c.id)::bigint,
-    (SELECT count(*) FROM email_sends s WHERE s.campaign_id = c.id AND s.bounced_at IS NOT NULL)::bigint,
+    ` + importedOr("contacted_count", "SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.last_contacted_at IS NOT NULL") + `::bigint,
+    ` + importedOr("reply_count_unique", "SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.reply_count > 0") + `::bigint,
+    ` + importedOr("total_opportunities", "SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.interest_status IN (1,2,3,4)") + `::bigint,
+    ` + importedOr("bounced_count", "SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.status = 'bounced'") + `::bigint,
+    ` + importedOr("unsubscribed_count", "SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.status = 'unsubscribed'") + `::bigint,
+    ` + importedOr("emails_sent_count", "SELECT count(*) FROM email_sends s WHERE s.campaign_id = c.id") + `::bigint,
+    ` + importedOr("bounced_count", "SELECT count(*) FROM email_sends s WHERE s.campaign_id = c.id AND s.bounced_at IS NOT NULL") + `::bigint,
     (SELECT count(*) FROM campaign_leads l JOIN contacts ct ON ct.id = l.contact_id
        WHERE l.campaign_id = c.id AND ct.lifecycle_stage IN ('newsletter_eligible','mailchimp_pending','mailchimp_subscribed'))::bigint,
     (SELECT count(*) FROM campaign_leads l JOIN contacts ct ON ct.id = l.contact_id
@@ -98,6 +110,9 @@ func buildCampaignWhere(f CampaignFilter, a *argSet) string {
 		conds = append(conds, "c.status = ANY("+a.add(f.Statuses)+")")
 	} else if !f.IncludeArchived {
 		conds = append(conds, "c.status <> 'archived'")
+	}
+	if len(f.Sources) > 0 {
+		conds = append(conds, "c.source = ANY("+a.add(f.Sources)+")")
 	}
 	if f.Q != nil && strings.TrimSpace(*f.Q) != "" {
 		conds = append(conds, "c.name ILIKE "+a.add("%"+strings.TrimSpace(*f.Q)+"%"))
@@ -121,7 +136,7 @@ func (s *Store) ListCampaigns(ctx context.Context, f CampaignFilter, sort string
 	out := []CampaignRow{}
 	for rows.Next() {
 		var r CampaignRow
-		if err := rows.Scan(&r.ID, &r.Name, &r.Status, &r.Brief, &r.Schedule, &r.Settings, &r.Steps, &r.StepDelays,
+		if err := rows.Scan(&r.ID, &r.Name, &r.Status, &r.Source, &r.Brief, &r.Schedule, &r.Settings, &r.Steps, &r.StepDelays,
 			&r.WeightsVersion, &r.InstantlyCampaignID, &r.InstantlyStatus, &r.InstantlySendingState, &r.LaunchedAt,
 			&r.PausedAt, &r.CompletedAt, &r.ArchivedAt, &r.LastSyncedAt, &r.LastSyncError, &r.Error, &r.LeadsTotal,
 			&r.LeadsPushed, &r.CreatedAt, &r.UpdatedAt, &r.Contacted, &r.Replied, &r.Interested, &r.Bounced,
@@ -149,7 +164,7 @@ func (s *Store) GetCampaignRow(ctx context.Context, id uuid.UUID) (CampaignRow, 
 		return CampaignRow{}, pgx.ErrNoRows
 	}
 	var r CampaignRow
-	if err := rows.Scan(&r.ID, &r.Name, &r.Status, &r.Brief, &r.Schedule, &r.Settings, &r.Steps, &r.StepDelays,
+	if err := rows.Scan(&r.ID, &r.Name, &r.Status, &r.Source, &r.Brief, &r.Schedule, &r.Settings, &r.Steps, &r.StepDelays,
 		&r.WeightsVersion, &r.InstantlyCampaignID, &r.InstantlyStatus, &r.InstantlySendingState, &r.LaunchedAt,
 		&r.PausedAt, &r.CompletedAt, &r.ArchivedAt, &r.LastSyncedAt, &r.LastSyncError, &r.Error, &r.LeadsTotal,
 		&r.LeadsPushed, &r.CreatedAt, &r.UpdatedAt, &r.Contacted, &r.Replied, &r.Interested, &r.Bounced,

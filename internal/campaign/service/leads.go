@@ -105,6 +105,9 @@ func (s *Service) ImportLeads(ctx context.Context, campaignID uuid.UUID, f db.Im
 	if err != nil {
 		return ImportResult{}, err
 	}
+	if err := refuseImported(camp); err != nil {
+		return ImportResult{}, err
+	}
 	switch camp.Status {
 	case campaign.CampaignArchived, campaign.CampaignCompleted:
 		return ImportResult{}, apperr.Conflict("a %s campaign cannot take new leads", camp.Status)

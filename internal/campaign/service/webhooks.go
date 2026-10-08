@@ -75,10 +75,19 @@ func (s *Service) IngestInstantly(ctx context.Context, body []byte, source strin
 		t := ev.Timestamp.UTC()
 		occurred = &t
 	}
-	return s.storeEvent(ctx, dbgen.InsertProviderEventParams{
+	result, err := s.storeEvent(ctx, dbgen.InsertProviderEventParams{
 		ID: ids.New(), Provider: campaign.ProviderInstantly, EventType: eventType, DedupeKey: key,
 		OccurredAt: occurred, Raw: raw, Source: source,
 	}, parseErr)
+	// A reply puts a new email in the Unibox: mirror it now rather than at the next
+	// periodic pass. The delivery is already stored, so a failure here only delays
+	// the inbox and must not make Instantly redeliver.
+	if err == nil && result.Stored && (eventType == campaign.InstantlyReplyReceived || eventType == campaign.InstantlyAutoReplyReceived) {
+		if err := s.SyncInbox(ctx); err != nil {
+			s.log.Warn("could not queue an inbox sync after a reply", "error", err)
+		}
+	}
+	return result, err
 }
 
 // AuthenticateMailchimpWebhook resolves the audience by token and verifies the signature.

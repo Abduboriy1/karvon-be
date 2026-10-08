@@ -150,14 +150,13 @@ func (a *App) build(ctx context.Context) error {
 		Providers: providers,
 		Log:       a.log,
 		Config: jobs.Config{
-			ProviderTimeout:       a.cfg.ProviderTimeout,
-			RecrawlAfterDays:      a.cfg.CrawlRecrawlAfterDays,
-			EventRetentionDays:    a.cfg.EventRetentionDays,
-			RunPollInterval:       a.cfg.ProviderPollInterval,
-			MaxActiveProviderRuns: a.cfg.ProviderMaxActiveRuns,
-			MaxRunDuration:        a.cfg.ProviderMaxRunTime,
-			RunPageSize:           a.cfg.ProviderPageSize,
-			SocialPageTimeout:     a.cfg.FBScrapeTimeout,
+			ProviderTimeout:    a.cfg.ProviderTimeout,
+			RecrawlAfterDays:   a.cfg.CrawlRecrawlAfterDays,
+			EventRetentionDays: a.cfg.EventRetentionDays,
+			RunPollInterval:    a.cfg.ProviderPollInterval,
+			MaxRunDuration:     a.cfg.ProviderMaxRunTime,
+			RunPageSize:        a.cfg.ProviderPageSize,
+			SocialPageTimeout:  a.cfg.FBScrapeTimeout,
 		},
 	})
 
@@ -207,6 +206,11 @@ func (a *App) build(ctx context.Context) error {
 	sourceService.SetRegistrar(domainService)
 	sourceService.SetMailboxes(mailboxService)
 
+	statsService := stats.NewService(a.store).WithRecurringCosts(stats.RecurringCosts{
+		MailboxMonthlyCents: a.cfg.ReportMailboxMonthlyCents,
+		FixedMonthlyCents:   a.cfg.ReportFixedMonthlyCents,
+	})
+
 	server := httpapi.NewServer(httpapi.Deps{
 		Jobs:         jobService,
 		Businesses:   business.NewService(a.store),
@@ -217,7 +221,7 @@ func (a *App) build(ctx context.Context) error {
 		Campaigns:    campaignService,
 		Domains:      domainService,
 		Mailboxes:    mailboxService,
-		Stats:        stats.NewService(a.store),
+		Stats:        statsService,
 		Store:        a.store,
 		Listener:     a.listener,
 		Health:       &healthChecker{pool: a.pool},
@@ -227,6 +231,7 @@ func (a *App) build(ctx context.Context) error {
 			SSEPingInterval:           a.cfg.SSEPingInterval,
 			WebhookMaxBodyBytes:       a.cfg.WebhookMaxBodyBytes,
 			MailchimpWebhookTolerance: a.cfg.MailchimpWebhookTolerance,
+			ChatGPTReturnURL:          a.cfg.ChatGPTLandingURL(),
 		},
 	})
 
@@ -326,9 +331,10 @@ func (a *App) buildVerification(cipher *crypto.Cipher) (*verifyjobs.Deps, *verif
 			provider.KeyReacher:     a.cfg.VerifyReacherEnabled,
 			provider.KeyPaid:        a.cfg.VerifyPaidEnabled,
 		},
-		PaidEnabled:   a.cfg.VerifyPaidEnabled,
-		PaidThreshold: a.cfg.VerifyPaidThreshold,
-		PaidMinScore:  a.cfg.VerifyPass2MinScore,
+		PaidEnabled:    a.cfg.VerifyPaidEnabled,
+		PaidThreshold:  a.cfg.VerifyPaidThreshold,
+		PaidMinScore:   a.cfg.VerifyPass2MinScore,
+		AutoSelfVerify: true,
 	}, a.log)
 
 	var verifiers verify.VerifierFactory = verify.NewVerifierFactory(cipher, verify.VerifierConfig{
@@ -398,6 +404,7 @@ func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
 			river.AddWorkerSafely(workers, verifyjobs.NewSelfWorker(verifyDeps)),
 			river.AddWorkerSafely(workers, verifyjobs.NewThirdPartyWorker(verifyDeps)),
 			river.AddWorkerSafely(workers, verifyjobs.NewFinalizeWorker(verifyDeps)),
+			river.AddWorkerSafely(workers, verifyjobs.NewAutoSelfWorker(verifyDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewLaunchWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewPushLeadsWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewActivateWorker(campaignDeps)),
@@ -409,6 +416,7 @@ func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
 			river.AddWorkerSafely(workers, campaignjobs.NewSyncAccountsWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewReplayWebhookEventsWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewSyncLeadsFullWorker(campaignDeps)),
+			river.AddWorkerSafely(workers, campaignjobs.NewSyncInboxWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewNewsletterPushWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewNewsletterSyncMembersWorker(campaignDeps)),
 			river.AddWorkerSafely(workers, campaignjobs.NewNewsletterSyncAudiencesWorker(campaignDeps)),
@@ -453,10 +461,15 @@ func (a *App) newRiverClient(deps *jobs.Deps, verifyDeps *verifyjobs.Deps,
 		// public URL is configured.
 		cfg.PeriodicJobs = []*river.PeriodicJob{
 			periodic(24*time.Hour, scraper.PruneEventsArgs{}, true),
+			// Verifies what scrapes find as they find it; the setting can switch it off.
+			// Not on start: a fresh process has nothing new to score that the next
+			// pass, one interval later, would not also find.
+			periodic(a.cfg.VerifyAutoInterval, verify.AutoSelfArgs{}, false),
 			periodic(a.cfg.CampaignSyncInterval, campaign.SyncAllArgs{}, false),
 			periodic(a.cfg.CampaignAccountsSyncInterval, campaign.SyncAccountsArgs{}, true),
 			periodic(a.cfg.CampaignWebhookReplayInterval, campaign.ReplayWebhookEventsArgs{}, false),
 			periodic(a.cfg.CampaignLeadsFullSyncInterval, campaign.SyncLeadsFullArgs{}, false),
+			periodic(a.cfg.InboxSyncInterval, campaign.SyncInboxArgs{}, true),
 			periodic(a.cfg.NewsletterSyncInterval, campaign.NewsletterSyncMembersArgs{}, false),
 			periodic(a.cfg.CampaignAccountsSyncInterval, campaign.NewsletterSyncAudiencesArgs{}, true),
 		}

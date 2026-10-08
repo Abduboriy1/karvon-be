@@ -7,6 +7,7 @@ package dbgen
 
 import (
 	"context"
+	"time"
 
 	uuid "github.com/google/uuid"
 )
@@ -26,7 +27,7 @@ const cancelVerificationRun = `-- name: CancelVerificationRun :one
 UPDATE verification_runs
 SET status = 'cancelled', finished_at = now()
 WHERE id = $1 AND status IN ('queued', 'running')
-RETURNING id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at
+RETURNING id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at, auto
 `
 
 func (q *Queries) CancelVerificationRun(ctx context.Context, id uuid.UUID) (VerificationRun, error) {
@@ -48,6 +49,7 @@ func (q *Queries) CancelVerificationRun(ctx context.Context, id uuid.UUID) (Veri
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Auto,
 	)
 	return i, err
 }
@@ -74,6 +76,27 @@ func (q *Queries) CountPendingVerificationRunItems(ctx context.Context, runID uu
 	return count, err
 }
 
+const countRecentActiveRunsForPass = `-- name: CountRecentActiveRunsForPass :one
+SELECT count(*) FROM verification_runs
+WHERE pass = $1
+  AND status IN ('queued', 'running')
+  AND created_at > $2
+`
+
+type CountRecentActiveRunsForPassParams struct {
+	Pass  string
+	Since time.Time
+}
+
+// What the auto sweep waits on. Only runs created inside the window count, so a run
+// that wedged mid-flight cannot switch automatic verification off for good.
+func (q *Queries) CountRecentActiveRunsForPass(ctx context.Context, arg CountRecentActiveRunsForPassParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countRecentActiveRunsForPass, arg.Pass, arg.Since)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countVerificationRuns = `-- name: CountVerificationRuns :one
 SELECT count(*) FROM verification_runs
 WHERE ($1::text IS NULL OR pass = $1::text)
@@ -93,10 +116,10 @@ func (q *Queries) CountVerificationRuns(ctx context.Context, arg CountVerificati
 }
 
 const createVerificationRun = `-- name: CreateVerificationRun :one
-INSERT INTO verification_runs (id, pass, filter, est_cost_cents, source_id)
+INSERT INTO verification_runs (id, pass, filter, est_cost_cents, source_id, auto)
 VALUES ($1, $2, $3, $4,
-        $5)
-RETURNING id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at
+        $5, $6)
+RETURNING id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at, auto
 `
 
 type CreateVerificationRunParams struct {
@@ -105,6 +128,7 @@ type CreateVerificationRunParams struct {
 	Filter       []byte
 	EstCostCents int64
 	SourceID     uuid.NullUUID
+	Auto         bool
 }
 
 func (q *Queries) CreateVerificationRun(ctx context.Context, arg CreateVerificationRunParams) (VerificationRun, error) {
@@ -114,6 +138,7 @@ func (q *Queries) CreateVerificationRun(ctx context.Context, arg CreateVerificat
 		arg.Filter,
 		arg.EstCostCents,
 		arg.SourceID,
+		arg.Auto,
 	)
 	var i VerificationRun
 	err := row.Scan(
@@ -132,12 +157,13 @@ func (q *Queries) CreateVerificationRun(ctx context.Context, arg CreateVerificat
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Auto,
 	)
 	return i, err
 }
 
 const getVerificationRun = `-- name: GetVerificationRun :one
-SELECT id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at FROM verification_runs WHERE id = $1
+SELECT id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at, auto FROM verification_runs WHERE id = $1
 `
 
 func (q *Queries) GetVerificationRun(ctx context.Context, id uuid.UUID) (VerificationRun, error) {
@@ -159,6 +185,7 @@ func (q *Queries) GetVerificationRun(ctx context.Context, id uuid.UUID) (Verific
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Auto,
 	)
 	return i, err
 }
@@ -183,7 +210,7 @@ func (q *Queries) InsertVerificationRunItems(ctx context.Context, arg InsertVeri
 }
 
 const lastFinishedVerificationRun = `-- name: LastFinishedVerificationRun :one
-SELECT id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at FROM verification_runs
+SELECT id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at, auto FROM verification_runs
 WHERE pass = $1 AND finished_at IS NOT NULL
 ORDER BY finished_at DESC
 LIMIT 1
@@ -208,6 +235,7 @@ func (q *Queries) LastFinishedVerificationRun(ctx context.Context, pass string) 
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Auto,
 	)
 	return i, err
 }
@@ -239,7 +267,7 @@ func (q *Queries) ListQueuedVerificationRunItems(ctx context.Context, runID uuid
 }
 
 const listVerificationRuns = `-- name: ListVerificationRuns :many
-SELECT id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at FROM verification_runs
+SELECT id, pass, status, filter, total, done, failed, skipped, credits_used, est_cost_cents, source_id, error, created_at, started_at, finished_at, auto FROM verification_runs
 WHERE ($1::text IS NULL OR pass = $1::text)
   AND ($2::text IS NULL OR status = $2::text)
 ORDER BY created_at DESC, id DESC
@@ -283,6 +311,7 @@ func (q *Queries) ListVerificationRuns(ctx context.Context, arg ListVerification
 			&i.CreatedAt,
 			&i.StartedAt,
 			&i.FinishedAt,
+			&i.Auto,
 		); err != nil {
 			return nil, err
 		}
@@ -363,7 +392,7 @@ FROM (SELECT count(*) FILTER (WHERE status = 'done')::int    AS done,
       FROM verification_run_items
       WHERE run_id = $1) counted
 WHERE r.id = $1
-RETURNING r.id, r.pass, r.status, r.filter, r.total, r.done, r.failed, r.skipped, r.credits_used, r.est_cost_cents, r.source_id, r.error, r.created_at, r.started_at, r.finished_at
+RETURNING r.id, r.pass, r.status, r.filter, r.total, r.done, r.failed, r.skipped, r.credits_used, r.est_cost_cents, r.source_id, r.error, r.created_at, r.started_at, r.finished_at, r.auto
 `
 
 func (q *Queries) RecomputeVerificationRunStats(ctx context.Context, id uuid.UUID) (VerificationRun, error) {
@@ -385,6 +414,7 @@ func (q *Queries) RecomputeVerificationRunStats(ctx context.Context, id uuid.UUI
 		&i.CreatedAt,
 		&i.StartedAt,
 		&i.FinishedAt,
+		&i.Auto,
 	)
 	return i, err
 }

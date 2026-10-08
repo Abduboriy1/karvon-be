@@ -8,11 +8,13 @@ info:
     lifecycle, reusable email content, consent and the two delivery providers). Live
     job progress is delivered over Server-Sent Events.
 
-    All routes except `/healthz`, `/openapi.json` and `/webhooks/*` require
-    `Authorization: Bearer <KARVON_API_KEY>`. The `/webhooks/*` routes carry no API
-    key: they are called by Instantly and Mailchimp, and are authenticated instead by
-    the per-registration token in their path together with the secret that provider
-    signs its deliveries with.
+    All routes except `/healthz`, `/openapi.json`, `/webhooks/*` and
+    `/ai/chatgpt/callback` require `Authorization: Bearer <KARVON_API_KEY>`. The
+    `/webhooks/*` routes carry no API key: they are called by Instantly and Mailchimp,
+    and are authenticated instead by the per-registration token in their path together
+    with the secret that provider signs its deliveries with. `/ai/chatgpt/callback` is
+    where OpenAI returns the browser after Sign in with ChatGPT; it trusts only the
+    single-use `state` minted by `POST /ai/chatgpt/connect`.
 servers:
   - url: /api/v1
     description: Default mount point
@@ -40,6 +42,8 @@ tags:
   - name: webhooks
   - name: domains
   - name: workspace
+  - name: inbox
+  - name: outreach
 
 paths:
   /healthz:
@@ -85,6 +89,55 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ScraperStats' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /dashboard/report:
+    get:
+      tags: [stats]
+      operationId: getDashboardReport
+      summary: The client report — leads, verification, outreach and spend for a window
+      description: |
+        One call carries the whole cross-module dashboard: headline figures for the
+        window, the same figures for the equal-length window before it (for deltas)
+        and for all time, a bucketed series, the campaigns that sent in the window and
+        where the leads came from.
+
+        `from` and `to` are calendar dates in `tz`, both inclusive. With neither the
+        window is the last 30 days ending today. `bucket` defaults by length: `day` up
+        to 62 days, `week` up to 182, `month` beyond. A window may span 731 days at
+        most, and a `day` series 400.
+
+        Campaign figures are by send cohort, as in `/campaign-analytics`: an open,
+        reply or bounce counts in the window of the send that drew it. Successful
+        leads are counted when they happened. Verification spend is priced at the
+        verifier's current per-1k rate.
+
+        `lead_cost` on each summary answers "what does one successful lead cost?":
+        total spend over successful leads, with every funnel step priced and its
+        arithmetic spelled out so the figure can be shown to a client with its working.
+      parameters:
+        - name: from
+          in: query
+          description: First day of the window, inclusive
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          description: Last day of the window, inclusive
+          schema: { type: string, format: date }
+        - name: tz
+          in: query
+          description: IANA time zone the dates and buckets are read in
+          schema: { type: string, default: UTC, example: Europe/London }
+        - name: bucket
+          in: query
+          schema: { $ref: '#/components/schemas/DashboardBucket' }
+      responses:
+        '200':
+          description: Dashboard report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /sources:
     get:
@@ -346,6 +399,169 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /exclusions/bulk:
+    post:
+      tags: [exclusions]
+      operationId: bulkCreateExclusions
+      summary: Add many global exclusions at once
+      description: |
+        Each item is created independently, exactly as POST /exclusions would create
+        it, so a duplicate or invalid item does not hold back the rest. The response
+        lists one result per item, in request order.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExclusionBulkCreate' }
+      responses:
+        '200':
+          description: One result per item
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExclusionBulkResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /exclusions/brand-scan:
+    get:
+      tags: [exclusions]
+      operationId: scanBrands
+      summary: Find chains and franchises in the stored businesses
+      description: |
+        Groups every stored business by registrable website domain (`domain`), by
+        normalised name (`name`) or by the first two words of the normalised name
+        (`name_prefix`), and lists the groups with at least `min_locations`
+        listings. Nothing is excluded: each group carries `suggested_rule`, which
+        can be sent as is to POST /exclusions/preview, /exclusions or
+        /exclusions/bulk.
+
+        The domain grouping skips shared platforms (social networks, website
+        builders, booking sites, free mail), where many unrelated businesses share
+        one domain. Groups whose every location is already excluded, and dismissed
+        groups, are hidden unless asked for.
+      parameters:
+        - name: group_by
+          in: query
+          schema: { $ref: '#/components/schemas/BrandScanGroupBy' }
+        - name: min_locations
+          in: query
+          description: Fewest listings a group needs
+          schema: { type: integer, minimum: 2, maximum: 100000, default: 3 }
+        - name: min_cities
+          in: query
+          description: Fewest distinct cities (city and state) a group needs
+          schema: { type: integer, minimum: 1, maximum: 100000, default: 1 }
+        - name: min_states
+          in: query
+          description: Fewest distinct states a group needs
+          schema: { type: integer, minimum: 0, maximum: 100000, default: 0 }
+        - name: q
+          in: query
+          description: Case-insensitive match on the group key or its most common name
+          schema: { type: string, maxLength: 200 }
+        - name: category
+          in: query
+          description: Repeatable; only businesses whose category equals one of the values are grouped
+          schema:
+            type: array
+            maxItems: 50
+            items: { type: string, maxLength: 200 }
+          style: form
+          explode: true
+        - name: state
+          in: query
+          description: Repeatable; only businesses in one of these states are grouped
+          schema:
+            type: array
+            maxItems: 60
+            items: { type: string, maxLength: 100 }
+          style: form
+          explode: true
+        - name: include_excluded
+          in: query
+          description: Also list groups whose every location is already excluded
+          schema: { type: boolean, default: false }
+        - name: include_dismissed
+          in: query
+          description: Also list dismissed groups
+          schema: { type: boolean, default: false }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: locations:desc
+            enum: [locations:desc, cities:desc, states:desc, reviews:desc, names:desc, key:asc]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Candidate brands
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrandCandidateList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /exclusions/brand-scan/dismissals:
+    get:
+      tags: [exclusions]
+      operationId: listBrandScanDismissals
+      summary: Groups dismissed from the brand scan, newest first
+      parameters:
+        - name: group_by
+          in: query
+          schema: { $ref: '#/components/schemas/BrandScanGroupBy' }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Dismissals
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrandScanDismissalList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [exclusions]
+      operationId: dismissBrandScanGroup
+      summary: Hide a group from later scans, e.g. a small business with a few locations
+      description: |
+        Keyed by grouping and group key, so dismissing the `name` group
+        "joes pizza" does not hide the `domain` group joespizza.com. Excludes
+        nothing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BrandScanDismissalCreate' }
+      responses:
+        '201':
+          description: The dismissal
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrandScanDismissal' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: The group is already dismissed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /exclusions/brand-scan/dismissals/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    delete:
+      tags: [exclusions]
+      operationId: undismissBrandScanGroup
+      summary: Put a dismissed group back into the scan
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /exclusions/{id}:
     parameters:
@@ -1366,6 +1582,14 @@ paths:
             items: { $ref: '#/components/schemas/CampaignStatus' }
           style: form
           explode: true
+        - name: source
+          in: query
+          description: Repeatable filter on where the campaign was started
+          schema:
+            type: array
+            items: { $ref: '#/components/schemas/CampaignSource' }
+          style: form
+          explode: true
         - name: q
           in: query
           description: Case-insensitive match on campaign name
@@ -1410,6 +1634,19 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /campaigns/sync:
+    post:
+      tags: [campaigns]
+      operationId: syncCampaigns
+      summary: Queue a sync of every campaign with Instantly now
+      description: |
+        Imports the campaigns started in Instantly's own app (as `source: instantly`),
+        refreshes the ones imported before, then reconciles every live campaign.
+        The same pass runs periodically on its own.
+      responses:
+        '202': { description: Sync queued }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /campaigns/{id}:
     parameters:
@@ -1791,6 +2028,166 @@ paths:
               schema: { $ref: '#/components/schemas/ContactEventList' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /inbox:
+    get:
+      tags: [inbox]
+      operationId: listInbox
+      summary: Received emails mirrored from Instantly's Unibox
+      description: |
+        The inbox sync mirrors every received email; a reply webhook queues a sync
+        at once, and a periodic pass catches anything a webhook missed. By default
+        one row per conversation (its newest reply) and no auto-replies, like the
+        Unibox's primary view.
+      parameters:
+        - name: unread
+          in: query
+          schema: { type: boolean }
+        - name: account
+          in: query
+          description: Repeatable filter on the mailbox that received the email
+          schema:
+            type: array
+            maxItems: 200
+            items: { type: string, maxLength: 320 }
+          style: form
+          explode: true
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          description: Case-insensitive match on sender, subject, preview or company
+          schema: { type: string, maxLength: 200 }
+        - name: latest_of_thread
+          in: query
+          schema: { type: boolean, default: true }
+        - name: include_auto_replies
+          in: query
+          schema: { type: boolean, default: false }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            default: sent_at:desc
+            enum: [sent_at:desc, sent_at:asc]
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated received emails
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InboxEmailList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /inbox/sync:
+    post:
+      tags: [inbox]
+      operationId: syncInbox
+      summary: Queue an inbox sync now
+      responses:
+        '202': { description: Sync queued }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /inbox/threads/{threadId}:
+    parameters:
+      - $ref: '#/components/parameters/ThreadIdPath'
+    get:
+      tags: [inbox]
+      operationId: getInboxThread
+      summary: One conversation, both sides, oldest email first
+      description: |
+        The first time a thread is opened its sent side is fetched from Instantly;
+        `refresh` asks again. When Instantly cannot be reached the stored emails
+        are returned with `stale` set.
+      parameters:
+        - name: refresh
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: The thread
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InboxThread' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /inbox/threads/{threadId}/read:
+    parameters:
+      - $ref: '#/components/parameters/ThreadIdPath'
+    post:
+      tags: [inbox]
+      operationId: markInboxThreadRead
+      summary: Mark a conversation read, at Instantly and here
+      responses:
+        '204': { description: Marked read }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /outreach/leads:
+    get:
+      tags: [outreach]
+      operationId: listOutreachLeads
+      summary: Everyone outreach has emailed, with how they answered
+      description: |
+        One row per campaign lead. `outcome` folds the interest status set in the
+        Unibox and the lead's delivery state into one word: successful (meeting
+        booked, meeting completed, won), potential (interested, no-show), bad (not
+        interested, wrong person, lost, unsubscribed), replied (an answer nobody
+        has labelled, or an out-of-office), no_reply, bounced, not_contacted.
+      parameters:
+        - $ref: '#/components/parameters/OutreachOutcomeFilter'
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          description: Case-insensitive match on email, name, company or campaign
+          schema: { type: string, maxLength: 200 }
+        - name: include_not_contacted
+          in: query
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/OutreachSort'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated outreach outcomes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OutreachLeadList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /outreach/leads/export.csv:
+    get:
+      tags: [outreach]
+      operationId: exportOutreachLeads
+      summary: Stream the outreach outcomes table as CSV
+      parameters:
+        - $ref: '#/components/parameters/OutreachOutcomeFilter'
+        - name: campaign_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: q
+          in: query
+          schema: { type: string, maxLength: 200 }
+        - name: include_not_contacted
+          in: query
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/OutreachSort'
+      responses:
+        '200':
+          description: CSV attachment
+          content:
+            text/csv:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
   /contacts:
@@ -2352,6 +2749,58 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AIProvider' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /ai/chatgpt/connect:
+    post:
+      tags: [ai]
+      operationId: connectChatGPT
+      summary: Start Sign in with ChatGPT
+      description: |
+        Records a sign-in attempt (valid for 10 minutes) and returns the OpenAI URL to
+        send the browser to. After the user approves, OpenAI redirects to
+        `/ai/chatgpt/callback`, which stores the tokens and sends the browser on to the
+        dashboard with `?chatgpt=connected` or `?chatgpt=error&reason=<reason>`.
+        Requires `KARVON_CHATGPT_CLIENT_ID`; 409 otherwise.
+      responses:
+        '200':
+          description: Where to send the browser
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatGPTConnectStart' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /ai/chatgpt:
+    delete:
+      tags: [ai]
+      operationId: disconnectChatGPT
+      summary: Forget the connected ChatGPT account
+      description: |
+        Deletes the stored tokens; generations fall back to the API key or the manual
+        flow. The user removes Karvon from their ChatGPT settings to revoke it at OpenAI.
+      responses:
+        '204': { description: Disconnected }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /ai/chatgpt/callback:
+    get:
+      tags: [ai]
+      operationId: chatGPTCallback
+      summary: OpenAI's redirect back after Sign in with ChatGPT
+      description: |
+        Called by the browser, not the dashboard, so it carries no API key. It always
+        answers with a redirect to `KARVON_CHATGPT_RETURN_URL` (default: the CORS
+        origin) carrying `chatgpt=connected`, or `chatgpt=error` and a `reason` of
+        `access_denied`, `expired`, `no_plan_access`, `failed` or `not_configured`.
+      security: []
+      parameters:
+        - { name: code, in: query, required: false, schema: { type: string, maxLength: 4096 } }
+        - { name: state, in: query, required: false, schema: { type: string, maxLength: 512 } }
+        - { name: error, in: query, required: false, schema: { type: string, maxLength: 512 } }
+        - { name: error_description, in: query, required: false, schema: { type: string, maxLength: 2048 } }
+      responses:
+        '302': { description: Back to the dashboard }
 
   /ai/generations:
     get:
@@ -3572,6 +4021,29 @@ components:
       description: A fully qualified domain name, e.g. example.com
       schema: { type: string, minLength: 3, maxLength: 253 }
 
+    ThreadIdPath:
+      name: threadId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 100 }
+    OutreachOutcomeFilter:
+      name: outcome
+      in: query
+      description: Repeatable outcome filter
+      schema:
+        type: array
+        items: { $ref: '#/components/schemas/OutreachOutcome' }
+      style: form
+      explode: true
+    OutreachSort:
+      name: sort
+      in: query
+      schema:
+        type: string
+        default: last_contacted_at:desc
+        enum: [last_contacted_at:desc, last_contacted_at:asc, last_replied_at:desc, email:asc, email:desc,
+               campaign:asc, outcome:asc]
+
   responses:
     BadRequest:
       description: Malformed request
@@ -3653,7 +4125,7 @@ components:
 
     Source:
       type: object
-      required: [id, kind, role, name, has_key, cost_per_1k_cents, enabled, created_at, updated_at]
+      required: [id, kind, role, name, has_key, cost_per_1k_cents, enabled, max_active_runs, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         kind: { $ref: '#/components/schemas/SourceKind' }
@@ -3662,6 +4134,15 @@ components:
         has_key: { type: boolean, description: Whether an API key is stored; the key itself is never returned }
         cost_per_1k_cents: { type: integer, minimum: 0 }
         enabled: { type: boolean }
+        max_active_runs:
+          type: integer
+          minimum: 1
+          maximum: 64
+          description: |
+            Maps providers only. How many vendor runs this account may have in flight
+            at once, across every scrape job. A location that finds every slot taken
+            waits in the queue and starts as soon as another run finishes. Match it to
+            the vendor plan: each Apify run is given KARVON_APIFY_RUN_MEMORY_MB.
         last_tested_at: { type: string, format: date-time, nullable: true }
         last_test_ok: { type: boolean, nullable: true }
         created_at: { type: string, format: date-time }
@@ -3677,6 +4158,7 @@ components:
           description: Plaintext key; stored AES-GCM encrypted. Omit to keep, null to clear.
         cost_per_1k_cents: { type: integer, minimum: 0, maximum: 1000000 }
         enabled: { type: boolean }
+        max_active_runs: { type: integer, minimum: 1, maximum: 64 }
         name: { type: string, minLength: 1, maxLength: 100 }
       additionalProperties: false
 
@@ -3733,10 +4215,15 @@ components:
     ExclusionMatchMode:
       type: string
       description: |
-        Company rules only. `exact` matches the normalised name; `prefix` also
+        How the value is compared. `exact` (the default) matches the normalised
+        name, or the domain and its subdomains. `prefix` (company rules only) also
         matches names that start with it word by word ("planet fitness" matches
-        "Planet Fitness - Austin").
-      enum: [exact, prefix]
+        "Planet Fitness - Austin"). `contains` (company, domain and email_domain
+        rules) matches a brand whose locations each have their own name and
+        domain: for a company, names containing the words anywhere ("ymca" matches
+        "Osage Prairie YMCA"); for a domain, hosts containing the text anywhere
+        ("ymca" matches orymca.org and ymcaofcallaway.org).
+      enum: [exact, prefix, contains]
 
     ExclusionSource:
       type: string
@@ -3869,6 +4356,149 @@ components:
       properties:
         excluded: { type: boolean }
         exclusion: { $ref: '#/components/schemas/ExclusionRef' }
+
+    ExclusionBulkCreate:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/GlobalExclusionCreate' }
+      additionalProperties: false
+
+    ExclusionBulkResult:
+      type: object
+      required: [created, results]
+      properties:
+        created: { type: integer, description: How many items were created }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/ExclusionBulkItemResult' }
+
+    ExclusionBulkItemResult:
+      type: object
+      required: [index, status]
+      properties:
+        index: { type: integer, description: Position of the item in the request }
+        status:
+          type: string
+          description: |
+            `created`; `duplicate` when an active rule with the same kind and key
+            exists (409 from POST /exclusions); `invalid` when the item fails
+            validation (422); `failed` otherwise
+          enum: [created, duplicate, invalid, failed]
+        exclusion: { $ref: '#/components/schemas/GlobalExclusion' }
+        error: { $ref: '#/components/schemas/Error' }
+
+    BrandScanGroupBy:
+      type: string
+      description: |
+        How the brand scan groups businesses. `domain` (the default) is the
+        registrable website domain, which catches a brand whose locations each have
+        their own name; `name` is the normalised name; `name_prefix` is the first
+        two words of the normalised name, which catches "Crunch Fitness - Amarillo"
+        and "Crunch Fitness Lubbock" together.
+      enum: [domain, name, name_prefix]
+      default: domain
+
+    BrandCandidate:
+      type: object
+      required: [group_by, key, display_name, locations, cities, states, state_list, distinct_names,
+                 distinct_domains, total_reviews, excluded_locations, suggested_rule, sample_businesses]
+      properties:
+        group_by: { $ref: '#/components/schemas/BrandScanGroupBy' }
+        key:
+          type: string
+          description: |
+            The group key: a registrable domain, or a normalised name or name
+            prefix. It is what a dismissal is keyed by and what an exclusion rule
+            on the group stores as its value.
+        display_name: { type: string, description: The most common business name in the group }
+        top_domain: { type: string, nullable: true, description: The most common registrable domain in the group }
+        locations: { type: integer, format: int64, description: Stored listings in the group }
+        cities: { type: integer, format: int64, description: Distinct city and state pairs }
+        states: { type: integer, format: int64 }
+        state_list:
+          type: array
+          items: { type: string }
+          description: Distinct states, upper case, sorted
+        distinct_names: { type: integer, format: int64 }
+        distinct_domains: { type: integer, format: int64 }
+        total_reviews: { type: integer, format: int64, description: Sum of Google review counts }
+        avg_rating: { type: number, format: double, nullable: true }
+        excluded_locations:
+          type: integer
+          format: int64
+          description: Listings in the group some exclusion already covers
+        existing_exclusion:
+          $ref: '#/components/schemas/ExclusionRef'
+        dismissal:
+          $ref: '#/components/schemas/BrandScanDismissalRef'
+        suggested_rule:
+          $ref: '#/components/schemas/GlobalExclusionCreate'
+        sample_businesses:
+          type: array
+          maxItems: 5
+          description: The most-reviewed listings in the group
+          items: { $ref: '#/components/schemas/BrandSampleBusiness' }
+
+    BrandSampleBusiness:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        city: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        domain: { type: string, nullable: true }
+
+    BrandCandidateList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/BrandCandidate' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    BrandScanDismissalRef:
+      type: object
+      nullable: true
+      description: Set when the group is dismissed (only listed with include_dismissed)
+      required: [id]
+      properties:
+        id: { type: string, format: uuid }
+        note: { type: string, nullable: true }
+
+    BrandScanDismissal:
+      type: object
+      required: [id, group_by, key, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        group_by: { $ref: '#/components/schemas/BrandScanGroupBy' }
+        key: { type: string }
+        note: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    BrandScanDismissalCreate:
+      type: object
+      required: [group_by, key]
+      properties:
+        group_by: { $ref: '#/components/schemas/BrandScanGroupBy' }
+        key: { type: string, minLength: 1, maxLength: 320, description: The `key` the scan returned }
+        note: { type: string, maxLength: 1000, nullable: true }
+      additionalProperties: false
+
+    BrandScanDismissalList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/BrandScanDismissal' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
 
     SourceTestResult:
       type: object
@@ -4284,6 +4914,242 @@ components:
           type: array
           items: { $ref: '#/components/schemas/ScraperStatsJobEmails' }
 
+    DashboardBucket:
+      type: string
+      enum: [day, week, month]
+
+    DashboardRange:
+      type: object
+      required: [from, to, days, tz, bucket, previous_from, previous_to]
+      properties:
+        from: { type: string, format: date }
+        to: { type: string, format: date, description: Inclusive }
+        days: { type: integer }
+        tz: { type: string }
+        bucket: { $ref: '#/components/schemas/DashboardBucket' }
+        previous_from: { type: string, format: date }
+        previous_to: { type: string, format: date }
+
+    DashboardCosts:
+      type: object
+      description: |
+        Spend in US cents. Scraping, verification and domains come from what was
+        recorded as charged; mailboxes and tools are monthly prices from the server's
+        configuration, prorated by the day (0 when not configured).
+      required: [total_cents, scraping_cents, verification_cents, domains_cents,
+                 mailboxes_cents, tools_cents, lines]
+      properties:
+        total_cents: { type: integer, format: int64 }
+        scraping_cents: { type: integer, format: int64, description: Maps provider runs }
+        verification_cents: { type: integer, format: int64, description: Paid verifier checks }
+        domains_cents: { type: integer, format: int64, description: Registered sending domains }
+        mailboxes_cents: { type: integer, format: int64, description: Provisioned Workspace mailboxes, prorated }
+        tools_cents: { type: integer, format: int64, description: Flat monthly tooling, prorated }
+        lines:
+          type: array
+          description: The same five figures with labels and how each was worked out, in display order
+          items: { $ref: '#/components/schemas/DashboardCostLine' }
+
+    DashboardCostLine:
+      type: object
+      required: [key, label, cents, basis]
+      properties:
+        key:
+          type: string
+          enum: [scraping, verification, domains, mailboxes, tools]
+        label: { type: string }
+        cents: { type: integer, format: int64 }
+        basis: { type: string, description: How the figure was reached, in plain words }
+
+    DashboardLeadCostStep:
+      type: object
+      required: [key, label, count, cost_cents, cost_per_unit_cents, rate_from_previous, formula]
+      properties:
+        key:
+          type: string
+          enum: [businesses, emails_found, emails_verified, leads_contacted, replied, successful_leads]
+        label: { type: string }
+        count: { type: integer, format: int64 }
+        cost_cents:
+          type: integer
+          format: int64
+          description: |
+            Spend charged to reach this stage — lead data for the first two, plus
+            verification for verified addresses, everything from leads emailed on
+        cost_per_unit_cents:
+          type: number
+          format: double
+          nullable: true
+          description: cost_cents / count to a hundredth of a cent (a business can cost under 1¢); null when count is 0
+        rate_from_previous:
+          type: number
+          format: double
+          nullable: true
+          description: count / the previous step's count; null on the first step. Can exceed 1.
+        formula: { type: string, description: 'The arithmetic with real figures, e.g. "$412.50 total spend ÷ 7 successful leads = $58.93 each". Unit prices under $1 carry four decimals ("$0.0032").' }
+
+    DashboardLeadCost:
+      type: object
+      description: What one successful lead cost, and the working behind it.
+      required: [successful_leads, cost_per_successful_lead_cents, definition, formula, steps, notes]
+      properties:
+        successful_leads: { type: integer, format: int64 }
+        cost_per_successful_lead_cents:
+          type: number
+          format: double
+          nullable: true
+          description: costs.total_cents / successful_leads to a hundredth of a cent; null when there were none
+        definition: { type: string, description: What counts as a successful lead }
+        formula: { type: string, description: The headline arithmetic }
+        steps:
+          type: array
+          description: The funnel from businesses scraped to successful leads, in order
+          items: { $ref: '#/components/schemas/DashboardLeadCostStep' }
+        notes:
+          type: array
+          description: Caveats to print under the figure
+          items: { type: string }
+
+    DashboardLeads:
+      type: object
+      required: [businesses, businesses_with_email, email_find_rate, emails_found,
+                 emails_verified, emails_green, paid_checks]
+      properties:
+        businesses: { type: integer, format: int64, description: Businesses scraped }
+        businesses_with_email: { type: integer, format: int64, description: Of those, how many have an address }
+        email_find_rate: { type: number, format: double, description: 'businesses_with_email / businesses, 0–1' }
+        emails_found: { type: integer, format: int64 }
+        emails_verified: { type: integer, format: int64, description: Addresses whose verdict was set in the window }
+        emails_green: { type: integer, format: int64, description: Verified deliverable — the ones used for outreach }
+        paid_checks: { type: integer, format: int64, description: Addresses sent to the paid verifier }
+
+    DashboardOutreach:
+      type: object
+      required: [campaigns_launched, sends, leads_contacted, opened, clicked, replied,
+                 positive_replies, bounced, unsubscribed, interested, meetings_booked,
+                 successful_leads, open_rate, reply_rate, positive_reply_rate, bounce_rate]
+      properties:
+        campaigns_launched: { type: integer, format: int64 }
+        sends: { type: integer, format: int64 }
+        leads_contacted: { type: integer, format: int64, description: Distinct contacts emailed }
+        opened: { type: integer, format: int64 }
+        clicked: { type: integer, format: int64 }
+        replied: { type: integer, format: int64, description: Human replies; auto-replies excluded }
+        positive_replies: { type: integer, format: int64 }
+        bounced: { type: integer, format: int64 }
+        unsubscribed: { type: integer, format: int64 }
+        interested: { type: integer, format: int64, description: Contacts marked interested in the window }
+        meetings_booked: { type: integer, format: int64 }
+        successful_leads:
+          type: integer
+          format: int64
+          description: Distinct contacts with a positive reply, an interested mark or a booked meeting
+        open_rate: { type: number, format: double }
+        reply_rate: { type: number, format: double }
+        positive_reply_rate: { type: number, format: double }
+        bounce_rate: { type: number, format: double }
+
+    DashboardSummary:
+      type: object
+      required: [costs, leads, outreach, lead_cost]
+      properties:
+        costs: { $ref: '#/components/schemas/DashboardCosts' }
+        lead_cost: { $ref: '#/components/schemas/DashboardLeadCost' }
+        leads: { $ref: '#/components/schemas/DashboardLeads' }
+        outreach: { $ref: '#/components/schemas/DashboardOutreach' }
+
+    DashboardPoint:
+      type: object
+      required: [bucket_start, businesses, emails_found, emails_green, sends, replied,
+                 positive_replies, successful_leads, scraping_cents, verification_cents,
+                 domains_cents, mailboxes_cents, tools_cents, cost_cents]
+      properties:
+        bucket_start: { type: string, format: date, description: First local day of the bucket }
+        businesses: { type: integer, format: int64 }
+        emails_found: { type: integer, format: int64 }
+        emails_green: { type: integer, format: int64 }
+        sends: { type: integer, format: int64 }
+        replied: { type: integer, format: int64 }
+        positive_replies: { type: integer, format: int64 }
+        successful_leads: { type: integer, format: int64, description: Counted in the bucket of each contact's first success in the window }
+        scraping_cents: { type: integer, format: int64 }
+        verification_cents: { type: integer, format: int64 }
+        domains_cents: { type: integer, format: int64 }
+        mailboxes_cents: { type: integer, format: int64 }
+        tools_cents: { type: integer, format: int64 }
+        cost_cents: { type: integer, format: int64, description: Sum of the five }
+
+    DashboardCampaign:
+      type: object
+      required: [id, name, status, launched_at, leads_total, sends, leads_contacted,
+                 opened, replied, positive_replies, bounced, open_rate, reply_rate]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { type: string }
+        launched_at: { type: string, format: date-time, nullable: true }
+        leads_total: { type: integer, format: int64 }
+        sends: { type: integer, format: int64, description: In the window }
+        leads_contacted: { type: integer, format: int64 }
+        opened: { type: integer, format: int64 }
+        replied: { type: integer, format: int64 }
+        positive_replies: { type: integer, format: int64 }
+        bounced: { type: integer, format: int64 }
+        open_rate: { type: number, format: double }
+        reply_rate: { type: number, format: double }
+
+    DashboardCount:
+      type: object
+      required: [label, count]
+      properties:
+        label: { type: string }
+        count: { type: integer, format: int64 }
+
+    DashboardBreakdowns:
+      type: object
+      required: [categories, states, verification_mix, campaign_status]
+      properties:
+        categories:
+          type: array
+          description: Top business categories in the window
+          items: { $ref: '#/components/schemas/DashboardCount' }
+        states:
+          type: array
+          description: Top states in the window
+          items: { $ref: '#/components/schemas/DashboardCount' }
+        verification_mix:
+          type: array
+          description: Addresses verified in the window by tag, green first; label is a VerificationTag
+          items: { $ref: '#/components/schemas/DashboardCount' }
+        campaign_status:
+          type: array
+          description: Every campaign by its status now (a snapshot, not windowed)
+          items: { $ref: '#/components/schemas/DashboardCount' }
+
+    DashboardReport:
+      type: object
+      required: [range, generated_at, current, previous, all_time, series, campaigns, breakdowns]
+      properties:
+        range: { $ref: '#/components/schemas/DashboardRange' }
+        generated_at: { type: string, format: date-time }
+        current: { $ref: '#/components/schemas/DashboardSummary' }
+        previous:
+          allOf:
+            - $ref: '#/components/schemas/DashboardSummary'
+          description: The equal-length window that ends where this one starts
+        all_time:
+          allOf:
+            - $ref: '#/components/schemas/DashboardSummary'
+          description: Everything up to the end of the window
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardPoint' }
+        campaigns:
+          type: array
+          description: Up to 10 campaigns that sent in the window or are running, busiest first
+          items: { $ref: '#/components/schemas/DashboardCampaign' }
+        breakdowns: { $ref: '#/components/schemas/DashboardBreakdowns' }
+
     VerificationTag:
       type: string
       description: |
@@ -4519,11 +5385,19 @@ components:
           description: |
             The floor, inclusive. An address below it is never billed, because a paid
             provider would only confirm what the free checks already established.
+        auto_self_verify:
+          type: boolean
+          description: |
+            Runs the free self pass automatically. A sweep every
+            KARVON_VERIFY_AUTO_INTERVAL starts a self run over every address that has
+            never been scored, so emails found by scrapes are verified without anyone
+            clicking. The third-party pass is never started automatically. Always
+            present in responses; omit it on update to keep the current value.
 
     VerificationSettingsUpdate:
       allOf:
         - $ref: '#/components/schemas/VerificationSettings'
-      description: The full settings object; every field is replaced.
+      description: The full settings object; every field is replaced, except auto_self_verify, which is kept when omitted.
 
     VerificationSettingsView:
       type: object
@@ -4626,7 +5500,7 @@ components:
     VerificationRun:
       type: object
       required: [id, pass, status, filter, total, done, failed, skipped, credits_used,
-                 est_cost_cents, created_at]
+                 est_cost_cents, auto, created_at]
       properties:
         id: { type: string, format: uuid }
         pass: { $ref: '#/components/schemas/VerificationPass' }
@@ -4644,6 +5518,9 @@ components:
         est_cost_cents: { type: integer, format: int64 }
         source_id: { type: string, format: uuid, nullable: true }
         error: { type: string, nullable: true }
+        auto:
+          type: boolean
+          description: Started by the automatic self-verify sweep rather than by an operator
         created_at: { type: string, format: date-time }
         started_at: { type: string, format: date-time, nullable: true }
         finished_at: { type: string, format: date-time, nullable: true }
@@ -4729,6 +5606,16 @@ components:
         A campaign's own state. `launching` is the window in which leads are being
         pushed to Instantly; it is transient and ends in `active` or `failed`.
       enum: [draft, ready, launching, active, paused, completed, failed, archived]
+
+    CampaignSource:
+      type: string
+      description: |
+        Where the campaign was started. `karvon` campaigns are built here and launched
+        into Instantly. `instantly` campaigns were started in Instantly's own app and
+        are imported by the campaign sync: they are mirrored, not edited, so their
+        sequence, leads and sending accounts can only be changed in Instantly, and
+        their counters come from Instantly's analytics.
+      enum: [karvon, instantly]
 
     CampaignLeadStatus:
       type: string
@@ -4848,7 +5735,7 @@ components:
     SyncRunKind:
       type: string
       enum: [instantly_campaign, instantly_campaigns_all, instantly_leads_full,
-             instantly_accounts, instantly_webhook_replay, mailchimp_members,
+             instantly_accounts, instantly_webhook_replay, instantly_inbox, mailchimp_members,
              mailchimp_audiences]
 
     SyncRunStatus:
@@ -4857,7 +5744,32 @@ components:
 
     AIProviderName:
       type: string
-      enum: [manual_chatgpt, openai_api]
+      description: |
+        `chatgpt_plan` runs on the ChatGPT account connected with Sign in with ChatGPT
+        and counts against its Plus or Pro plan.
+      enum: [manual_chatgpt, openai_api, chatgpt_plan]
+
+    ChatGPTConnectionStatus:
+      type: string
+      description: |
+        `needs_reconnect` means OpenAI stopped accepting the sign-in (revoked, or unused
+        for 30 days); generations fall back until the operator connects again.
+      enum: [connected, needs_reconnect, disconnected]
+
+    ChatGPTConnection:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/ChatGPTConnectionStatus' }
+        email: { type: string, nullable: true }
+        connected_at: { type: string, format: date-time, nullable: true }
+        last_error: { type: string, nullable: true }
+
+    ChatGPTConnectStart:
+      type: object
+      required: [authorize_url]
+      properties:
+        authorize_url: { type: string, description: Send the browser here }
 
     AIMode:
       type: string
@@ -4902,13 +5814,14 @@ components:
 
     Campaign:
       type: object
-      required: [id, name, status, steps, weights_version, leads_total, leads_pushed,
+      required: [id, name, status, source, steps, weights_version, leads_total, leads_pushed,
                  contacted, replied, interested, bounced, unsubscribed, sends_total,
                  sends_bounced, eligible, subscribed, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         status: { $ref: '#/components/schemas/CampaignStatus' }
+        source: { $ref: '#/components/schemas/CampaignSource' }
         brief:
           type: object
           additionalProperties: true
@@ -5600,6 +6513,12 @@ components:
         mode: { $ref: '#/components/schemas/AIMode' }
         model: { type: string, nullable: true, description: Null for the manual provider }
         label: { type: string, example: ChatGPT (manual) }
+        chatgpt:
+          allOf: [{ $ref: '#/components/schemas/ChatGPTConnection' }]
+          nullable: true
+          description: |
+            Sign in with ChatGPT. Null when `KARVON_CHATGPT_CLIENT_ID` is not set. While
+            connected, `provider` is `chatgpt_plan` and `mode` is `api`.
 
     AIBrief:
       type: object
@@ -5712,6 +6631,13 @@ components:
       properties:
         brief: { $ref: '#/components/schemas/AIBrief' }
         campaign_id: { type: string, format: uuid }
+        manual:
+          type: boolean
+          default: false
+          description: |
+            Build the prompt for copy-and-paste even when a provider could generate
+            directly. The way out when the ChatGPT plan's cap is used up
+            (`ai_plan_limit`); never falls through to a billed API key.
       additionalProperties: false
 
     AIParseRequest:
@@ -6303,6 +7229,10 @@ components:
         mismatch:
           type: array
           items: { $ref: '#/components/schemas/Mismatch' }
+          description: |
+            Metrics where our count and Instantly's disagree beyond tolerance. Always
+            empty for a campaign with `source` `instantly`: it sends nothing through
+            Karvon, so there is no local count to compare.
         daily:
           type: array
           items: { $ref: '#/components/schemas/DailyPoint' }
@@ -6810,3 +7740,150 @@ components:
       properties:
         email: { type: string }
         password: { type: string }
+
+    OutreachOutcome:
+      type: string
+      enum: [successful, potential, bad, replied, no_reply, bounced, not_contacted]
+
+    InboxEmail:
+      type: object
+      description: One received email, as the inbox lists it.
+      required: [id, direction, is_unread, is_auto_reply, sent_at, thread_emails]
+      properties:
+        id: { type: string, description: Instantly's email id }
+        thread_id: { type: string, nullable: true }
+        direction: { type: string, enum: [received, sent] }
+        email_account: { type: string, nullable: true, description: The mailbox that received it }
+        lead_email: { type: string, nullable: true }
+        from_address: { type: string, nullable: true }
+        to_addresses: { type: string, nullable: true }
+        subject: { type: string, nullable: true }
+        content_preview: { type: string, nullable: true }
+        is_unread: { type: boolean }
+        is_auto_reply: { type: boolean }
+        interest_status: { type: integer, nullable: true, description: The email's Instantly i_status }
+        ai_interest_value: { type: number, format: double, nullable: true }
+        instantly_campaign_id: { type: string, nullable: true }
+        campaign_id: { type: string, format: uuid, nullable: true }
+        campaign_name: { type: string, nullable: true }
+        contact_id: { type: string, format: uuid, nullable: true }
+        first_name: { type: string, nullable: true }
+        last_name: { type: string, nullable: true }
+        company: { type: string, nullable: true }
+        campaign_lead_id: { type: string, format: uuid, nullable: true }
+        lead_interest_label:
+          type: string
+          nullable: true
+          description: The lead's current interest status, which can be newer than the email's
+        lead_outcome:
+          allOf: [{ $ref: '#/components/schemas/OutreachOutcome' }]
+          nullable: true
+        sent_at: { type: string, format: date-time }
+        thread_emails: { type: integer, format: int64, description: Emails stored for this thread }
+
+    InboxEmailList:
+      type: object
+      required: [data, meta, unread_total]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/InboxEmail' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+        unread_total: { type: integer, format: int64 }
+
+    InboxMessage:
+      type: object
+      description: One email of a thread, with its body.
+      required: [id, direction, is_unread, is_auto_reply, sent_at]
+      properties:
+        id: { type: string }
+        thread_id: { type: string, nullable: true }
+        message_id: { type: string, nullable: true }
+        direction: { type: string, enum: [received, sent] }
+        email_account: { type: string, nullable: true }
+        lead_email: { type: string, nullable: true }
+        from_address: { type: string, nullable: true }
+        to_addresses: { type: string, nullable: true }
+        cc_addresses: { type: string, nullable: true }
+        subject: { type: string, nullable: true }
+        body_text: { type: string, nullable: true }
+        body_html: { type: string, nullable: true }
+        content_preview: { type: string, nullable: true }
+        step: { type: string, nullable: true }
+        is_unread: { type: boolean }
+        is_auto_reply: { type: boolean }
+        interest_status: { type: integer, nullable: true }
+        campaign_id: { type: string, format: uuid, nullable: true }
+        contact_id: { type: string, format: uuid, nullable: true }
+        sent_at: { type: string, format: date-time }
+
+    InboxThread:
+      type: object
+      required: [thread_id, stale, emails]
+      properties:
+        thread_id: { type: string }
+        stale:
+          type: boolean
+          description: Instantly could not be asked for the full thread; only stored emails are shown
+        emails:
+          type: array
+          items: { $ref: '#/components/schemas/InboxMessage' }
+
+    OutreachLead:
+      type: object
+      description: One campaign lead and how outreach to them went.
+      required: [lead_id, campaign_id, campaign_name, contact_id, email, status, outcome, emails_sent,
+                 open_count, click_count, reply_count]
+      properties:
+        lead_id: { type: string, format: uuid }
+        campaign_id: { type: string, format: uuid }
+        campaign_name: { type: string }
+        contact_id: { type: string, format: uuid }
+        email: { type: string }
+        first_name: { type: string, nullable: true }
+        last_name: { type: string, nullable: true }
+        company: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        website: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/CampaignLeadStatus' }
+        interest_status: { type: integer, nullable: true }
+        interest_label:
+          type: string
+          nullable: true
+          description: Instantly's lead status, e.g. interested, meeting_booked, not_interested
+        outcome: { $ref: '#/components/schemas/OutreachOutcome' }
+        sending_account: { type: string, nullable: true, description: The mailbox that last emailed them }
+        emails_sent: { type: integer, format: int64 }
+        first_contacted_at: { type: string, format: date-time, nullable: true }
+        last_contacted_at: { type: string, format: date-time, nullable: true }
+        open_count: { type: integer }
+        click_count: { type: integer }
+        reply_count: { type: integer }
+        last_replied_at: { type: string, format: date-time, nullable: true }
+        last_reply_subject: { type: string, nullable: true }
+        last_reply_preview: { type: string, nullable: true }
+        last_reply_thread_id: { type: string, nullable: true }
+
+    OutreachOutcomeCounts:
+      type: object
+      description: Leads per outcome under the same filter, ignoring the outcome filter itself.
+      required: [successful, potential, bad, replied, no_reply, bounced, not_contacted]
+      properties:
+        successful: { type: integer, format: int64 }
+        potential: { type: integer, format: int64 }
+        bad: { type: integer, format: int64 }
+        replied: { type: integer, format: int64 }
+        no_reply: { type: integer, format: int64 }
+        bounced: { type: integer, format: int64 }
+        not_contacted: { type: integer, format: int64 }
+
+    OutreachLeadList:
+      type: object
+      required: [data, meta, outcomes]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/OutreachLead' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+        outcomes: { $ref: '#/components/schemas/OutreachOutcomeCounts' }
