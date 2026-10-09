@@ -19,9 +19,10 @@ import (
 // talks to, and the worker dependency bundle.
 func (a *App) buildCampaign(cipher *crypto.Cipher) (*campaignjobs.Deps, *service.Service) {
 	var instantlyFactory instantly.Factory = instantly.NewFactory(cipher, instantly.FactoryConfig{
-		BaseURL: a.cfg.InstantlyBaseURL,
-		Timeout: a.cfg.InstantlyTimeout,
-		Log:     a.log,
+		BaseURL:     a.cfg.InstantlyBaseURL,
+		Timeout:     a.cfg.InstantlyTimeout,
+		BulkTimeout: a.cfg.InstantlyBulkTimeout,
+		Log:         a.log,
 	})
 	if a.opts.instantlyFactory != nil {
 		instantlyFactory = a.opts.instantlyFactory

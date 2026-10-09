@@ -48,6 +48,10 @@ type Config struct {
 	APIKey string
 	// Timeout bounds one call, including retries. Zero means 30s.
 	Timeout time.Duration
+	// BulkTimeout bounds the bulk lead calls (add, delete) instead: Instantly
+	// takes well over 30s on a batch of a hundred leads and keeps processing after
+	// the caller gives up. Zero means three minutes.
+	BulkTimeout time.Duration
 	// Retries is how many times a failed attempt is repeated. Zero means 3;
 	// negative means one attempt.
 	Retries int
@@ -89,6 +93,9 @@ func New(cfg Config) *HTTPClient {
 	cfg.BaseURL = strings.TrimSuffix(cfg.BaseURL, "/")
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 30 * time.Second
+	}
+	if cfg.BulkTimeout <= 0 {
+		cfg.BulkTimeout = 3 * time.Minute
 	}
 	switch {
 	case cfg.Retries == 0:
@@ -217,7 +224,7 @@ func (c *HTTPClient) SendingStatus(ctx context.Context, id string) (SendingStatu
 // AddLeads implements Client.
 func (c *HTTPClient) AddLeads(ctx context.Context, in AddLeadsInput) (AddLeadsResult, error) {
 	var out AddLeadsResult
-	if err := c.do(ctx, http.MethodPost, "/leads/add", nil, in, &out); err != nil {
+	if err := c.doWithin(ctx, c.cfg.BulkTimeout, http.MethodPost, "/leads/add", nil, in, &out); err != nil {
 		return AddLeadsResult{}, err
 	}
 	return out, nil
@@ -235,6 +242,17 @@ func (c *HTTPClient) ListLeads(ctx context.Context, in ListLeadsInput) (LeadPage
 // DeleteLead implements Client. A lead Instantly no longer has is provider.ErrNotFound.
 func (c *HTTPClient) DeleteLead(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, "/leads/"+url.PathEscape(id), nil, nil, nil)
+}
+
+// DeleteLeads implements Client.
+func (c *HTTPClient) DeleteLeads(ctx context.Context, in DeleteLeadsInput) (int, error) {
+	var out struct {
+		Count int `json:"count"`
+	}
+	if err := c.doWithin(ctx, c.cfg.BulkTimeout, http.MethodDelete, "/leads", nil, in, &out); err != nil {
+		return 0, err
+	}
+	return out.Count, nil
 }
 
 // UpdateInterestStatus implements Client. Instantly answers 202 with no useful body.
@@ -460,15 +478,19 @@ func (c *HTTPClient) ListWebhookEvents(ctx context.Context, in WebhookEventsInpu
 
 /* --------------------------------------------------------------------- wire */
 
+func (c *HTTPClient) do(ctx context.Context, method, path string, query url.Values, body, out any) error {
+	return c.doWithin(ctx, c.cfg.Timeout, method, path, query, body, out)
+}
+
 // do performs one API call: a slot from the semaphore, a deadline that covers every
 // attempt, retries on transient failures, and the status-to-sentinel mapping. A
 // nil body sends no payload; a nil out discards the response.
-func (c *HTTPClient) do(ctx context.Context, method, path string, query url.Values, body, out any) error {
+func (c *HTTPClient) doWithin(ctx context.Context, timeout time.Duration, method, path string, query url.Values, body, out any) error {
 	if open, until := c.circuitOpen(); open {
 		return fmt.Errorf("instantly: %w (until %s)", provider.ErrCircuitOpen, until.Format(time.TimeOnly))
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	// Hold a slot for the whole call. Waiting for one is part of the timeout.

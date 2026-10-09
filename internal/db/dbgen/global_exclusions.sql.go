@@ -64,7 +64,7 @@ FROM contacts c
 WHERE c.id = cl.contact_id
   AND cl.status IN ('pending', 'pushing', 'active', 'paused')
   AND EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = c.email)
-RETURNING cl.id, cl.campaign_id, cl.contact_id, cl.business_id, cl.status, cl.instantly_lead_id, cl.instantly_status, cl.interest_status, cl.interest_label, cl.claimed_at, cl.pushed_at, cl.push_attempts, cl.last_push_error, cl.custom_vars, cl.last_contacted_at, cl.last_opened_at, cl.last_clicked_at, cl.last_replied_at, cl.open_count, cl.click_count, cl.reply_count, cl.created_at, cl.updated_at
+RETURNING cl.id, cl.campaign_id, cl.contact_id, cl.business_id, cl.status, cl.instantly_lead_id, cl.instantly_status, cl.interest_status, cl.interest_label, cl.claimed_at, cl.pushed_at, cl.push_attempts, cl.last_push_error, cl.custom_vars, cl.last_contacted_at, cl.last_opened_at, cl.last_clicked_at, cl.last_replied_at, cl.open_count, cl.click_count, cl.reply_count, cl.created_at, cl.updated_at, cl.provider_removed_at, cl.provider_removed_reason, cl.cleanup_run_id
 `
 
 // The exclusion sweep: every lead that is still waiting or in flight and whose
@@ -103,6 +103,9 @@ func (q *Queries) ExcludeLiveCampaignLeads(ctx context.Context) ([]CampaignLead,
 			&i.ReplyCount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ProviderRemovedAt,
+			&i.ProviderRemovedReason,
+			&i.CleanupRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -218,7 +221,7 @@ WHERE c.id = cl.contact_id AND camp.id = cl.campaign_id
   AND camp.status NOT IN ('completed', 'failed', 'archived')
   AND c.suppressed_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = c.email)
-RETURNING cl.id, cl.campaign_id, cl.contact_id, cl.business_id, cl.status, cl.instantly_lead_id, cl.instantly_status, cl.interest_status, cl.interest_label, cl.claimed_at, cl.pushed_at, cl.push_attempts, cl.last_push_error, cl.custom_vars, cl.last_contacted_at, cl.last_opened_at, cl.last_clicked_at, cl.last_replied_at, cl.open_count, cl.click_count, cl.reply_count, cl.created_at, cl.updated_at
+RETURNING cl.id, cl.campaign_id, cl.contact_id, cl.business_id, cl.status, cl.instantly_lead_id, cl.instantly_status, cl.interest_status, cl.interest_label, cl.claimed_at, cl.pushed_at, cl.push_attempts, cl.last_push_error, cl.custom_vars, cl.last_contacted_at, cl.last_opened_at, cl.last_clicked_at, cl.last_replied_at, cl.open_count, cl.click_count, cl.reply_count, cl.created_at, cl.updated_at, cl.provider_removed_at, cl.provider_removed_reason, cl.cleanup_run_id
 `
 
 // When a rule is removed, a lead it took out that never reached the provider goes
@@ -258,6 +261,9 @@ func (q *Queries) RestoreExcludedCampaignLeads(ctx context.Context) ([]CampaignL
 			&i.ReplyCount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ProviderRemovedAt,
+			&i.ProviderRemovedReason,
+			&i.CleanupRunID,
 		); err != nil {
 			return nil, err
 		}

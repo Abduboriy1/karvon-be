@@ -88,15 +88,25 @@ func TestAZeroWeightVariantIsNeverPicked(t *testing.T) {
 			t.Fatalf("picked a non-positive weight variant %s", id)
 		}
 	}
-	if _, ok := Pick(Seed(uuid.New(), uuid.New(), 1, 1), []Weighted{{ID: zero, Weight: 0}}); ok {
-		t.Fatal("no positive weight should yield no pick")
+	// With no positive weight at all, every variant counts equally.
+	a, b := uuid.New(), uuid.New()
+	seen := map[uuid.UUID]bool{}
+	for i := 0; i < 200; i++ {
+		id, ok := Pick(Seed(uuid.New(), uuid.New(), 1, 1), []Weighted{{ID: a, Weight: 0}, {ID: b, Weight: 0}})
+		if !ok {
+			t.Fatal("unweighted variants should still yield a pick")
+		}
+		seen[id] = true
+	}
+	if !seen[a] || !seen[b] {
+		t.Fatal("unweighted variants should be split evenly")
 	}
 	if _, ok := Pick(Seed(uuid.New(), uuid.New(), 1, 1), nil); ok {
 		t.Fatal("no variants should yield no pick")
 	}
 }
 
-func TestValidateWeightsRequiresATotalOfOneHundred(t *testing.T) {
+func TestValidateWeightsOnlyBoundsEachWeight(t *testing.T) {
 	cases := []struct {
 		name    string
 		weights []int
@@ -105,12 +115,13 @@ func TestValidateWeightsRequiresATotalOfOneHundred(t *testing.T) {
 		{"single 100", []int{100}, false},
 		{"40/30/30", []int{40, 30, 30}, false},
 		{"with a zero", []int{100, 0}, false},
-		{"sums to 90", []int{50, 40}, true},
-		{"sums to 110", []int{60, 50}, true},
+		{"sums to 90", []int{50, 40}, false},
+		{"sums to 110", []int{60, 50}, false},
+		{"even split of ones", []int{1, 1}, false},
 		{"negative", []int{-10, 110}, true},
 		{"above 100", []int{101}, true},
-		{"all zero", []int{0, 0}, true},
-		{"empty", nil, true},
+		{"all zero", []int{0, 0}, false},
+		{"empty", nil, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -21,6 +21,7 @@ import (
 type FactoryConfig struct {
 	BaseURL          string
 	Timeout          time.Duration
+	BulkTimeout      time.Duration
 	Retries          int
 	Concurrency      int
 	BreakerThreshold int
@@ -77,6 +78,7 @@ func (f *DefaultFactory) For(_ context.Context, source dbgen.Source) (Client, er
 		BaseURL:          f.cfg.BaseURL,
 		APIKey:           apiKey,
 		Timeout:          f.cfg.Timeout,
+		BulkTimeout:      f.cfg.BulkTimeout,
 		Retries:          f.cfg.Retries,
 		Concurrency:      f.cfg.Concurrency,
 		BreakerThreshold: f.cfg.BreakerThreshold,

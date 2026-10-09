@@ -111,6 +111,15 @@ paths:
         leads are counted when they happened. Verification spend is priced at the
         verifier's current per-1k rate.
 
+        Campaigns started in Instantly's own app (`source: instantly`) send nothing
+        through Karvon, so they are not in the `outreach` figures or the
+        `sends`/`replied` series. They are reported beside them — `outreach.imported`,
+        the `imported_*` series and their rows in `campaigns` — from Instantly's
+        per-day campaign analytics, counted on the calendar day Instantly reports each
+        figure on. `lead_cost` does count them: the spend pays for every campaign, so
+        its emailed, replied and successful steps add theirs in, with Instantly's
+        opportunities as successful leads (`lead_cost.imported_successful_leads`).
+
         `lead_cost` on each summary answers "what does one successful lead cost?":
         total spend over successful leads, with every funnel step priced and its
         arithmetic spelled out so the figure can be shown to a client with its working.
@@ -1486,6 +1495,150 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/ValidationFailed' }
 
+  /integrations/instantly/cleanup:
+    get:
+      tags: [integrations]
+      operationId: getInstantlyCleanup
+      summary: Instantly contact capacity, the saved cleanup policy, and the latest runs
+      description: |
+        Instantly's plans cap "uploaded contacts": every lead sitting in a campaign,
+        whatever its status, counts until it is deleted from the campaign. A cleanup
+        deletes the leads Instantly has finished with, which frees their slots, while
+        Karvon keeps each lead, its sends and its timeline (`provider_removed_at` on
+        the lead, a `removed_from_provider` event on the contact).
+
+        Only campaigns launched from Karvon are cleaned: a campaign started in
+        Instantly has no local copy of its leads, so deleting them would lose the
+        record. Its leads are still counted in the capacity estimate.
+      responses:
+        '200':
+          description: Cleanup overview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstantlyCleanupOverview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /integrations/instantly/cleanup/settings:
+    put:
+      tags: [integrations]
+      operationId: updateInstantlyCleanupSettings
+      summary: Save the cleanup policy, the automatic switch and the plan's contact cap
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstantlyCleanupSettings' }
+      responses:
+        '200':
+          description: Saved settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstantlyCleanupSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /integrations/instantly/cleanup/preview:
+    get:
+      tags: [integrations]
+      operationId: previewInstantlyCleanup
+      summary: How many leads a cleanup would delete, per campaign, without deleting any
+      parameters:
+        - name: scope
+          in: query
+          schema: { $ref: '#/components/schemas/InstantlyCleanupScope' }
+        - name: min_idle_days
+          in: query
+          description: Defaults to 3
+          schema: { type: integer, minimum: 0, maximum: 90 }
+        - name: include_replied
+          in: query
+          description: Defaults to false
+          schema: { type: boolean }
+        - name: campaign_id
+          in: query
+          description: Repeatable; empty means every Karvon campaign
+          schema:
+            type: array
+            items: { type: string, format: uuid }
+          style: form
+          explode: true
+        - name: max_leads
+          in: query
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Preview
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstantlyCleanupPreview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+
+  /integrations/instantly/cleanup/runs:
+    get:
+      tags: [integrations]
+      operationId: listInstantlyCleanupRuns
+      summary: Cleanup runs, newest first
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: Paginated cleanup runs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstantlyCleanupRunList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [integrations]
+      operationId: startInstantlyCleanup
+      summary: Start a cleanup run that deletes finished leads from Instantly
+      description: |
+        Runs in the background, in batches; poll the run for progress. Only one run
+        can be queued or running at a time.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InstantlyCleanupRequest' }
+      responses:
+        '202':
+          description: The run, queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstantlyCleanupRun' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Nothing matches, or a run is already in flight
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
+        '502':
+          description: Instantly is not configured or refused the key
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /integrations/instantly/cleanup/runs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [integrations]
+      operationId: getInstantlyCleanupRun
+      summary: One cleanup run, with its progress
+      responses:
+        '200':
+          description: Cleanup run
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InstantlyCleanupRun' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /webhooks/instantly/{token}:
     parameters:
       - $ref: '#/components/parameters/WebhookTokenPath'
@@ -1723,17 +1876,39 @@ paths:
     post:
       tags: [campaigns]
       operationId: launchCampaign
-      summary: Create the campaign at Instantly and start pushing its leads
+      summary: Create the campaign at Instantly and push its leads, now or at a scheduled time
       description: |
         The pre-launch checklist is re-evaluated server-side; a blocking item refuses
         the launch with 409 and the failing items in `error.details`, so the client
         never has to guess which one it was. The push itself runs in the background.
+
+        Every launch first frees Instantly contact slots: Karvon leads Instantly has
+        finished with (the cleanup "finished" scope, with the saved idle window and
+        replied setting) and every lead of a campaign started in Instantly that has
+        completed are deleted there. Nothing in a running campaign is touched.
+
+        With `scheduled_at` the campaign moves to `scheduled` and is prepared at
+        Instantly straight away: slots freed, the campaign created (not started),
+        its leads pushed. At that moment the checklist is evaluated again (the
+        campaign can still be edited while it waits; a failing gate ends in `failed`
+        with the reasons in `error`), leads added since are pushed and the campaign
+        is activated. Instantly still only sends inside the campaign's sending
+        window, so a time outside it starts at the next window.
+
+        A `scheduled` campaign can be launched again: a new `scheduled_at`
+        reschedules it, no body (or a null `scheduled_at`) launches it now.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LaunchRequest' }
       responses:
         '202':
-          description: The campaign, now launching
+          description: The campaign, now `launching` or `scheduled`
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Campaign' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
@@ -1741,11 +1916,29 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationFailed' }
         '502':
           description: Instantly refused the campaign or is unreachable
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /campaigns/{id}/unschedule:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    post:
+      tags: [campaigns]
+      operationId: unscheduleCampaign
+      summary: Cancel a scheduled launch; the campaign goes back to draft
+      responses:
+        '200':
+          description: The campaign, back in draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Campaign' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /campaigns/{id}/pause:
     parameters:
@@ -1853,8 +2046,9 @@ paths:
       summary: Replace the variant mix, which bumps the campaign's weights version
       description: |
         Assignments already locked to a contact keep the variant they were given, so
-        a re-weighting only affects leads that have not been assigned yet. The weights
-        of each step must be positive; a step whose weights total zero is rejected.
+        a re-weighting only affects leads that have not been assigned yet. Weights are
+        optional relative shares between 0 and 100; when none on a step is positive its
+        variants are split evenly.
       requestBody:
         required: true
         content:
@@ -4991,9 +5185,19 @@ components:
     DashboardLeadCost:
       type: object
       description: What one successful lead cost, and the working behind it.
-      required: [successful_leads, cost_per_successful_lead_cents, definition, formula, steps, notes]
+      required: [successful_leads, imported_successful_leads, cost_per_successful_lead_cents, definition,
+                 formula, steps, notes]
       properties:
-        successful_leads: { type: integer, format: int64 }
+        successful_leads:
+          type: integer
+          format: int64
+          description: |
+            Every campaign's: `outreach.successful_leads` plus the opportunities of the
+            campaigns started in Instantly (`outreach.imported.interested`).
+        imported_successful_leads:
+          type: integer
+          format: int64
+          description: The part of `successful_leads` that is Instantly's opportunity count
         cost_per_successful_lead_cents:
           type: number
           format: double
@@ -5027,7 +5231,8 @@ components:
       type: object
       required: [campaigns_launched, sends, leads_contacted, opened, clicked, replied,
                  positive_replies, bounced, unsubscribed, interested, meetings_booked,
-                 successful_leads, open_rate, reply_rate, positive_reply_rate, bounce_rate]
+                 successful_leads, open_rate, reply_rate, positive_reply_rate, bounce_rate,
+                 imported]
       properties:
         campaigns_launched: { type: integer, format: int64 }
         sends: { type: integer, format: int64 }
@@ -5048,6 +5253,33 @@ components:
         reply_rate: { type: number, format: double }
         positive_reply_rate: { type: number, format: double }
         bounce_rate: { type: number, format: double }
+        imported: { $ref: '#/components/schemas/DashboardImported' }
+
+    DashboardImported:
+      type: object
+      description: |
+        The campaigns started in Instantly's own app (`source: instantly`), from
+        Instantly's per-day campaign analytics over the window's calendar days. Those
+        campaigns send nothing through Karvon, so none of this is in the outreach
+        figures beside it; it is kept apart from them, never merged. The lead cost
+        does add it in (`lead_cost.imported_successful_leads`), since the spend pays
+        for these campaigns too. It also counts differently: a reply or an opportunity is counted
+        on the day it came in, not with the send that drew it, so its rates are
+        approximate over short windows. Instantly reports no bounces or unsubscribes
+        per day, so there are none here.
+      required: [campaigns, sends, leads_contacted, opened, clicked, replied, interested,
+                 open_rate, reply_rate, interested_rate]
+      properties:
+        campaigns: { type: integer, format: int64, description: Imported campaigns that sent or heard back in the window }
+        sends: { type: integer, format: int64 }
+        leads_contacted: { type: integer, format: int64, description: Leads emailed for the first time }
+        opened: { type: integer, format: int64, description: 'Unique opens, summed by day' }
+        clicked: { type: integer, format: int64, description: 'Unique clicks, summed by day' }
+        replied: { type: integer, format: int64, description: 'Unique replies, summed by day' }
+        interested: { type: integer, format: int64, description: Instantly's opportunities }
+        open_rate: { type: number, format: double, description: opened / sends }
+        reply_rate: { type: number, format: double, description: replied / sends }
+        interested_rate: { type: number, format: double, description: interested / sends }
 
     DashboardSummary:
       type: object
@@ -5062,7 +5294,8 @@ components:
       type: object
       required: [bucket_start, businesses, emails_found, emails_green, sends, replied,
                  positive_replies, successful_leads, scraping_cents, verification_cents,
-                 domains_cents, mailboxes_cents, tools_cents, cost_cents]
+                 domains_cents, mailboxes_cents, tools_cents, cost_cents,
+                 imported_sends, imported_replied, imported_interested]
       properties:
         bucket_start: { type: string, format: date, description: First local day of the bucket }
         businesses: { type: integer, format: int64 }
@@ -5078,15 +5311,24 @@ components:
         mailboxes_cents: { type: integer, format: int64 }
         tools_cents: { type: integer, format: int64 }
         cost_cents: { type: integer, format: int64, description: Sum of the five }
+        imported_sends: { type: integer, format: int64, description: Sends of campaigns started in Instantly; not in sends }
+        imported_replied: { type: integer, format: int64, description: 'Their unique replies, on the day they came in; not in replied' }
+        imported_interested: { type: integer, format: int64, description: 'Their opportunities, on the day Instantly reports them' }
 
     DashboardCampaign:
       type: object
-      required: [id, name, status, launched_at, leads_total, sends, leads_contacted,
+      description: |
+        One campaign's figures for the window. A campaign started in Instantly
+        (`source: instantly`) is read from Instantly's per-day analytics over the
+        window's calendar days: `positive_replies` is its opportunities, and `bounced`
+        is null because Instantly reports no bounces per day.
+      required: [id, name, status, source, launched_at, leads_total, sends, leads_contacted,
                  opened, replied, positive_replies, bounced, open_rate, reply_rate]
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
         status: { type: string }
+        source: { $ref: '#/components/schemas/CampaignSource' }
         launched_at: { type: string, format: date-time, nullable: true }
         leads_total: { type: integer, format: int64 }
         sends: { type: integer, format: int64, description: In the window }
@@ -5094,7 +5336,7 @@ components:
         opened: { type: integer, format: int64 }
         replied: { type: integer, format: int64 }
         positive_replies: { type: integer, format: int64 }
-        bounced: { type: integer, format: int64 }
+        bounced: { type: integer, format: int64, nullable: true }
         open_rate: { type: number, format: double }
         reply_rate: { type: number, format: double }
 
@@ -5146,7 +5388,7 @@ components:
           items: { $ref: '#/components/schemas/DashboardPoint' }
         campaigns:
           type: array
-          description: Up to 10 campaigns that sent in the window or are running, busiest first
+          description: Up to 10 campaigns that sent in the window or are running, busiest first; imported ones included
           items: { $ref: '#/components/schemas/DashboardCampaign' }
         breakdowns: { $ref: '#/components/schemas/DashboardBreakdowns' }
 
@@ -5603,9 +5845,10 @@ components:
     CampaignStatus:
       type: string
       description: |
-        A campaign's own state. `launching` is the window in which leads are being
+        A campaign's own state. `scheduled` waits for `scheduled_launch_at`, then moves
+        to `launching` on its own. `launching` is the window in which leads are being
         pushed to Instantly; it is transient and ends in `active` or `failed`.
-      enum: [draft, ready, launching, active, paused, completed, failed, archived]
+      enum: [draft, ready, scheduled, launching, active, paused, completed, failed, archived]
 
     CampaignSource:
       type: string
@@ -5707,7 +5950,7 @@ components:
              permission_requested, consent_captured, consent_revoked,
              newsletter_eligible, newsletter_pushed, newsletter_pending,
              newsletter_subscribed, newsletter_unsubscribed, newsletter_cleaned,
-             newsletter_profile_updated, stage_changed, note]
+             newsletter_profile_updated, stage_changed, note, removed_from_provider]
 
     ContactEventSource:
       type: string
@@ -5850,6 +6093,11 @@ components:
         instantly_campaign_id: { type: string, nullable: true }
         instantly_status: { type: integer, nullable: true }
         instantly_sending_status: { type: string, nullable: true }
+        scheduled_launch_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When a `scheduled` campaign launches; cleared by a launch now or an unschedule
         launched_at: { type: string, format: date-time, nullable: true }
         paused_at: { type: string, format: date-time, nullable: true }
         completed_at: { type: string, format: date-time, nullable: true }
@@ -6035,8 +6283,27 @@ components:
         open_count: { type: integer }
         click_count: { type: integer }
         reply_count: { type: integer }
+        provider_removed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            When the lead was deleted from its Instantly campaign, freeing a contact
+            slot. The lead, its sends and its timeline stay here.
+        provider_removed_reason:
+          allOf:
+            - $ref: '#/components/schemas/ProviderRemovedReason'
+          nullable: true
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    ProviderRemovedReason:
+      type: string
+      description: |
+        Why a lead left Instantly: `cleanup` (a cleanup run), `suppressed` (bounce,
+        unsubscribe or a manual suppression), `excluded` (a global exclusion) or
+        `manual` (removed from the campaign by an operator).
+      enum: [cleanup, suppressed, excluded, manual]
 
     CampaignLead:
       allOf:
@@ -6105,6 +6372,14 @@ components:
           description: |
             Keeps only each business's primary address. Turn it off to treat every
             address a business holds as a candidate.
+        exclude_contacted:
+          type: boolean
+          default: true
+          description: |
+            Skips addresses any campaign has already emailed (counted in
+            `skipped_contacted`). Instantly forgets a lead once it is cleaned out,
+            so this is what stops the same person being emailed twice. Turn it off
+            for a deliberate follow-up campaign to people already contacted.
       additionalProperties: false
 
     LeadImportRequest:
@@ -6119,7 +6394,7 @@ components:
       description: |
         `matched` is what the filter found; the rest is what became of it. The skip
         counts are reported rather than refused so an import is never silently partial.
-      required: [matched, imported, skipped_suppressed, skipped_excluded, skipped_existing, skipped_invalid, capped]
+      required: [matched, imported, skipped_suppressed, skipped_excluded, skipped_existing, skipped_contacted, skipped_invalid, capped]
       properties:
         matched: { type: integer, format: int64 }
         imported: { type: integer }
@@ -6129,6 +6404,9 @@ components:
           description: Addresses the filter reached that a global exclusion keeps out
 
         skipped_existing: { type: integer }
+        skipped_contacted:
+          type: integer
+          description: Addresses some campaign already emailed, kept out by `exclude_contacted`
         skipped_invalid: { type: integer }
         capped:
           type: boolean
@@ -7153,6 +7431,203 @@ components:
           additionalProperties: true
           nullable: true
 
+    LaunchRequest:
+      type: object
+      properties:
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When to launch, in the future and within a year. Null or absent launches now.
+      additionalProperties: false
+
+    InstantlyCleanupScope:
+      type: string
+      description: |
+        `finished` deletes only leads Instantly will not email again: the sequence
+        completed, the lead bounced or unsubscribed, Karvon stopped it, or its
+        campaign completed or was archived. `emailed` deletes every lead emailed at
+        least once, which also cancels the follow-up steps it has not had yet.
+      enum: [finished, emailed]
+
+    InstantlyCleanupPolicy:
+      type: object
+      required: [scope, min_idle_days, include_replied]
+      properties:
+        scope: { $ref: '#/components/schemas/InstantlyCleanupScope' }
+        min_idle_days:
+          type: integer
+          minimum: 0
+          maximum: 90
+          description: |
+            Keeps leads whose last send or reply is newer than this many days, so a
+            reply to a recent email still finds its lead at Instantly.
+        include_replied:
+          type: boolean
+          description: |
+            Also deletes leads that replied. Leads marked interested, meeting booked,
+            meeting completed or won are always kept.
+
+    InstantlyCleanupSettings:
+      allOf:
+        - $ref: '#/components/schemas/InstantlyCleanupPolicy'
+        - type: object
+          required: [auto_enabled]
+          properties:
+            auto_enabled:
+              type: boolean
+              description: Runs the saved policy on its own every few hours
+            contact_limit:
+              type: integer
+              minimum: 1
+              nullable: true
+              description: |
+                The Instantly plan's uploaded-contacts cap (1,000 on Growth). Enables
+                the capacity figures and the non-blocking `instantly_capacity` launch
+                checklist item.
+
+    InstantlyCapacity:
+      type: object
+      description: |
+        An estimate: Instantly has no endpoint for the figure. Karvon's own leads are
+        counted exactly; campaigns started in Instantly add their lead count from the
+        latest sync.
+      required: [in_use, karvon_leads, imported_leads, pending_leads]
+      properties:
+        limit: { type: integer, nullable: true }
+        in_use:
+          type: integer
+          format: int64
+          description: karvon_leads + imported_leads
+        available:
+          type: integer
+          format: int64
+          nullable: true
+          description: limit - in_use; null when the limit is unknown, negative when over
+        karvon_leads:
+          type: integer
+          format: int64
+          description: Leads Karvon pushed that are still in an Instantly campaign
+        imported_leads:
+          type: integer
+          format: int64
+          description: Leads of campaigns started in Instantly's own app
+        pending_leads:
+          type: integer
+          format: int64
+          description: Leads queued to be pushed by ready, scheduled or live campaigns
+
+    InstantlyCleanupCampaign:
+      type: object
+      required: [campaign, in_instantly, eligible]
+      properties:
+        campaign: { $ref: '#/components/schemas/CampaignSummary' }
+        in_instantly:
+          type: integer
+          format: int64
+          description: Leads of this campaign still at Instantly
+        eligible:
+          type: integer
+          format: int64
+          description: How many of them the cleanup would delete
+        last_contacted_at: { type: string, format: date-time, nullable: true }
+
+    InstantlyCleanupPreview:
+      type: object
+      required: [eligible, campaigns, capacity]
+      properties:
+        eligible:
+          type: integer
+          format: int64
+          description: Leads the cleanup would delete, capped by max_leads
+        campaigns:
+          type: array
+          description: Every Karvon campaign with leads still at Instantly, most eligible first
+          items: { $ref: '#/components/schemas/InstantlyCleanupCampaign' }
+        capacity: { $ref: '#/components/schemas/InstantlyCapacity' }
+
+    InstantlyCleanupRequest:
+      allOf:
+        - $ref: '#/components/schemas/InstantlyCleanupPolicy'
+        - type: object
+          properties:
+            campaign_ids:
+              type: array
+              maxItems: 500
+              description: Empty or absent means every Karvon campaign
+              items: { type: string, format: uuid }
+            max_leads:
+              type: integer
+              minimum: 1
+              nullable: true
+              description: Stop after this many; absent deletes everything that matches
+
+    InstantlyCleanupRunStatus:
+      type: string
+      enum: [queued, running, done, failed]
+
+    InstantlyCleanupRun:
+      type: object
+      required: [id, trigger, status, scope, min_idle_days, include_replied, campaign_ids,
+                 selected, removed, already_gone, failed, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        trigger:
+          type: string
+          enum: [manual, auto]
+        status: { $ref: '#/components/schemas/InstantlyCleanupRunStatus' }
+        scope: { $ref: '#/components/schemas/InstantlyCleanupScope' }
+        min_idle_days: { type: integer }
+        include_replied: { type: boolean }
+        campaign_ids:
+          type: array
+          items: { type: string, format: uuid }
+        max_leads: { type: integer, nullable: true }
+        selected:
+          type: integer
+          description: Leads matching when the run started; the denominator for progress
+        removed:
+          type: integer
+          description: Deleted from Instantly by this run
+        already_gone:
+          type: integer
+          description: Instantly no longer had them; stamped as removed all the same
+        failed:
+          type: integer
+          description: Instantly refused to delete them; they stay and the run moved on
+        error: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time, nullable: true }
+
+    InstantlyCleanupRunList:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/InstantlyCleanupRun' }
+        meta: { $ref: '#/components/schemas/PageMeta' }
+
+    InstantlyCleanupOverview:
+      type: object
+      required: [settings, capacity, eligible_now]
+      properties:
+        settings: { $ref: '#/components/schemas/InstantlyCleanupSettings' }
+        capacity: { $ref: '#/components/schemas/InstantlyCapacity' }
+        eligible_now:
+          type: integer
+          format: int64
+          description: What the saved policy would delete right now
+        active_run:
+          allOf:
+            - $ref: '#/components/schemas/InstantlyCleanupRun'
+          nullable: true
+        last_run:
+          allOf:
+            - $ref: '#/components/schemas/InstantlyCleanupRun'
+          nullable: true
+
     SyncRunList:
       type: object
       required: [data, meta]
@@ -7177,19 +7652,46 @@ components:
 
     CampaignOverview:
       type: object
-      required: [campaigns, contacts_by_stage, local, interested, newsletter_eligible,
+      required: [campaigns, contacts_by_stage, local, instantly, interested, newsletter_eligible,
                  subscribers, conversion_rate, funnel]
       properties:
         campaigns: { $ref: '#/components/schemas/CountsByKey' }
         contacts_by_stage: { $ref: '#/components/schemas/CountsByKey' }
         local: { $ref: '#/components/schemas/Metrics' }
-        interested: { type: integer, format: int64 }
+        instantly: { $ref: '#/components/schemas/ImportedTotals' }
+        interested:
+          type: integer
+          format: int64
+          description: |
+            Contacts that ever reached the interested stage, counted from our own
+            events. Campaigns started in Instantly are not in it; their figure is
+            `instantly.interested`.
         newsletter_eligible: { type: integer, format: int64 }
         subscribers: { type: integer, format: int64 }
-        conversion_rate: { type: number, format: double }
+        conversion_rate:
+          type: number
+          format: double
+          description: |
+            Subscribers over contacts ever contacted: the whole cold → subscriber
+            conversion, not only its eligible tail.
         funnel:
           type: array
           items: { $ref: '#/components/schemas/FunnelStep' }
+
+    ImportedTotals:
+      type: object
+      description: |
+        Instantly's own figures summed over the campaigns started in Instantly's app
+        (`source: instantly`), from each one's latest analytics snapshot. Those
+        campaigns send nothing through Karvon, so they have no local sends, leads or
+        events; this is kept beside `local`, never merged into it. `interested` is
+        Instantly's opportunity count, and `metrics.positive_replies` carries the same
+        number, Instantly having no reply classification of its own.
+      required: [campaigns, metrics, interested]
+      properties:
+        campaigns: { type: integer, format: int64, description: Imported campaigns counted. }
+        metrics: { $ref: '#/components/schemas/Metrics' }
+        interested: { type: integer, format: int64 }
 
     Mismatch:
       type: object
@@ -7242,7 +7744,12 @@ components:
         interested: { type: integer, format: int64 }
         eligible: { type: integer, format: int64 }
         subscribers: { type: integer, format: int64 }
-        conversion_rate: { type: number, format: double }
+        conversion_rate:
+          type: number
+          format: double
+          description: |
+            Subscribers over contacts ever contacted: the whole cold → subscriber
+            conversion, not only its eligible tail.
         lead_counts: { $ref: '#/components/schemas/CountsByKey' }
 
     VariantAnalytics:

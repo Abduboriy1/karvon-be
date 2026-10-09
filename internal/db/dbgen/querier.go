@@ -17,6 +17,7 @@ type Querier interface {
 	ActivateCampaignVariants(ctx context.Context, campaignID uuid.UUID) error
 	AddCampaignSendingAccount(ctx context.Context, arg AddCampaignSendingAccountParams) error
 	AddCampaignVariant(ctx context.Context, arg AddCampaignVariantParams) error
+	AddCleanupRunCounts(ctx context.Context, arg AddCleanupRunCountsParams) error
 	// Attaches hand-picked businesses to a re-crawl job.
 	AddJobResults(ctx context.Context, arg AddJobResultsParams) (int64, error)
 	AddVariantComponent(ctx context.Context, arg AddVariantComponentParams) error
@@ -29,7 +30,8 @@ type Querier interface {
 	CancelPendingJobQueries(ctx context.Context, jobID uuid.UUID) error
 	CancelPendingVerificationRunItems(ctx context.Context, runID uuid.UUID) error
 	CancelVerificationRun(ctx context.Context, id uuid.UUID) (VerificationRun, error)
-	// A compare-and-set: only a ready campaign can start launching, and only once.
+	// A compare-and-set: only a ready or scheduled campaign can start launching, and
+	// only once.
 	ClaimCampaignLaunch(ctx context.Context, id uuid.UUID) (Campaign, error)
 	// Compare-and-set: only a queued or failed subscription can be picked up.
 	ClaimNewsletterSubscription(ctx context.Context, id uuid.UUID) (NewsletterSubscription, error)
@@ -66,6 +68,7 @@ type Querier interface {
 	// then unsubscribed still replied.
 	CountCampaignLeadsEverReached(ctx context.Context, campaignID uuid.NullUUID) ([]CountCampaignLeadsEverReachedRow, error)
 	CountCampaignsByStatus(ctx context.Context) ([]CountCampaignsByStatusRow, error)
+	CountCleanupRuns(ctx context.Context) (int64, error)
 	CountContactEvents(ctx context.Context, contactID uuid.UUID) (int64, error)
 	CountContactsByStage(ctx context.Context) ([]CountContactsByStageRow, error)
 	CountDomainPurchases(ctx context.Context) (int64, error)
@@ -102,6 +105,8 @@ type Querier interface {
 	// that wedged mid-flight cannot switch automatic verification off for good.
 	CountRecentActiveRunsForPass(ctx context.Context, arg CountRecentActiveRunsForPassParams) (int64, error)
 	CountSyncRuns(ctx context.Context, kind *string) (int64, error)
+	// Pending leads whose address the paid third-party verifier called deliverable.
+	CountThirdPartyVerifiedPendingCampaignLeads(ctx context.Context, campaignID uuid.UUID) (int64, error)
 	CountVerificationRuns(ctx context.Context, arg CountVerificationRunsParams) (int64, error)
 	CountWorkspaceDomains(ctx context.Context) (int64, error)
 	// The attempt is counted before the billable call, so the next pass knows whether a
@@ -111,6 +116,10 @@ type Querier interface {
 	CreateBrandScanDismissal(ctx context.Context, arg CreateBrandScanDismissalParams) (BrandScanDismissal, error)
 	CreateCampaign(ctx context.Context, arg CreateCampaignParams) (Campaign, error)
 	CreateChatGPTOAuthState(ctx context.Context, arg CreateChatGPTOAuthStateParams) error
+	// The partial unique index refuses a second run while one is queued or running.
+	// created_at comes from the service clock: every batch measures the idle window
+	// from it, so it must agree with the clock the preview and the count used.
+	CreateCleanupRun(ctx context.Context, arg CreateCleanupRunParams) (InstantlyCleanupRun, error)
 	CreateContactConsent(ctx context.Context, arg CreateContactConsentParams) (ContactConsent, error)
 	CreateContactSuppression(ctx context.Context, arg CreateContactSuppressionParams) (ContactSuppression, error)
 	CreateDomainPurchase(ctx context.Context, arg CreateDomainPurchaseParams) (DomainPurchase, error)
@@ -158,12 +167,14 @@ type Querier interface {
 	FindActiveGlobalExclusion(ctx context.Context, arg FindActiveGlobalExclusionParams) (GlobalExclusion, error)
 	FindBusinessByDomain(ctx context.Context, domain *string) (Business, error)
 	FindBusinessByPhoneZip(ctx context.Context, arg FindBusinessByPhoneZipParams) (Business, error)
+	FinishCleanupRun(ctx context.Context, arg FinishCleanupRunParams) (InstantlyCleanupRun, error)
 	FinishDomainPurchase(ctx context.Context, arg FinishDomainPurchaseParams) (DomainPurchase, error)
 	FinishSyncRun(ctx context.Context, arg FinishSyncRunParams) error
 	// The automatic steps are done. A domain whose DKIM record was already published (a
 	// retry after adding a mailbox failed) goes straight back to active.
 	FinishWorkspaceProvisioning(ctx context.Context, id uuid.UUID) (WorkspaceDomain, error)
 	GetAIGeneration(ctx context.Context, id uuid.UUID) (AiGeneration, error)
+	GetActiveCleanupRun(ctx context.Context) (InstantlyCleanupRun, error)
 	GetActiveConsent(ctx context.Context, contactID uuid.UUID) (ContactConsent, error)
 	GetActiveDomainPurchase(ctx context.Context) (DomainPurchase, error)
 	GetActiveSuppression(ctx context.Context, contactID uuid.UUID) (ContactSuppression, error)
@@ -175,6 +186,7 @@ type Querier interface {
 	GetCampaignLeadByInstantlyID(ctx context.Context, arg GetCampaignLeadByInstantlyIDParams) (CampaignLead, error)
 	GetCampaignSettings(ctx context.Context) (CampaignSetting, error)
 	GetChatGPTConnection(ctx context.Context) (AiChatgptConnection, error)
+	GetCleanupRun(ctx context.Context, id uuid.UUID) (InstantlyCleanupRun, error)
 	GetContact(ctx context.Context, id uuid.UUID) (Contact, error)
 	GetContactByEmail(ctx context.Context, email string) (Contact, error)
 	GetContactConsent(ctx context.Context, id uuid.UUID) (ContactConsent, error)
@@ -191,6 +203,7 @@ type Querier interface {
 	GetJobQuery(ctx context.Context, id uuid.UUID) (JobQuery, error)
 	GetJobStats(ctx context.Context, id uuid.UUID) ([]byte, error)
 	GetJobStatus(ctx context.Context, id uuid.UUID) (string, error)
+	GetLatestCleanupRun(ctx context.Context) (InstantlyCleanupRun, error)
 	GetLatestEmailSendForLead(ctx context.Context, campaignLeadID uuid.UUID) (EmailSend, error)
 	GetNewsletterAudience(ctx context.Context, id uuid.UUID) (NewsletterAudience, error)
 	GetNewsletterAudienceByListID(ctx context.Context, mailchimpListID string) (NewsletterAudience, error)
@@ -227,6 +240,8 @@ type Querier interface {
 	// The dedupe key makes a redelivery a no-op: no row comes back, and nothing is queued.
 	InsertProviderEvent(ctx context.Context, arg InsertProviderEventParams) (ProviderEvent, error)
 	InsertVerificationRunItems(ctx context.Context, arg InsertVerificationRunItemsParams) (int64, error)
+	// The latest day held for a campaign; NULL before its first daily fetch.
+	LastCampaignStatsDay(ctx context.Context, campaignID uuid.UUID) (pgtype.Date, error)
 	LastFinishedVerificationRun(ctx context.Context, pass string) (VerificationRun, error)
 	LastSyncRun(ctx context.Context, kind string) (SyncRun, error)
 	// Zero time when the campaign has no events: max() is NULL there, and the cast
@@ -238,6 +253,12 @@ type Querier interface {
 	LatestSendTimestampForCampaign(ctx context.Context, campaignID uuid.UUID) (time.Time, error)
 	LiftContactSuppression(ctx context.Context, arg LiftContactSuppressionParams) (Contact, error)
 	LiftSuppression(ctx context.Context, arg LiftSuppressionParams) (ContactSuppression, error)
+	// An email is linked to our campaign and contact when it is mirrored, but only to
+	// the ones that exist at that moment: an email mirrored before its Instantly
+	// campaign was imported, or before its lead became a contact, is stored unlinked,
+	// and the incremental sync only walks forward, so it is never revisited. This
+	// fills in the links that have become known since.
+	LinkInboxEmails(ctx context.Context) (int64, error)
 	ListAIGenerations(ctx context.Context, arg ListAIGenerationsParams) ([]AiGeneration, error)
 	ListActiveCampaignVariantsForStep(ctx context.Context, arg ListActiveCampaignVariantsForStepParams) ([]ListActiveCampaignVariantsForStepRow, error)
 	ListActivity(ctx context.Context, arg ListActivityParams) ([]ContactEvent, error)
@@ -258,6 +279,7 @@ type Querier interface {
 	ListCampaignsByStatus(ctx context.Context, statuses []string) ([]Campaign, error)
 	ListCampaignsForSendingAccount(ctx context.Context, sendingAccountID uuid.UUID) ([]Campaign, error)
 	ListCampaignsUsingVariant(ctx context.Context, variantID uuid.UUID) ([]Campaign, error)
+	ListCleanupRuns(ctx context.Context, arg ListCleanupRunsParams) ([]InstantlyCleanupRun, error)
 	ListContactConsents(ctx context.Context, contactID uuid.UUID) ([]ContactConsent, error)
 	ListContactEvents(ctx context.Context, arg ListContactEventsParams) ([]ContactEvent, error)
 	ListContactSuppressions(ctx context.Context, contactID uuid.UUID) ([]ContactSuppression, error)
@@ -269,6 +291,10 @@ type Querier interface {
 	ListEmailSendsForLead(ctx context.Context, campaignLeadID uuid.UUID) ([]EmailSend, error)
 	ListEmailVariants(ctx context.Context, arg ListEmailVariantsParams) ([]EmailVariant, error)
 	ListEmailVariantsByIDs(ctx context.Context, ids []uuid.UUID) ([]EmailVariant, error)
+	// Campaigns started in Instantly that have stopped sending but still need a sync:
+	// one that has never had its per-day figures fetched, or one completed recently
+	// enough that replies and opportunities may still be coming in.
+	ListFinishedImportedCampaignsToSync(ctx context.Context, settleDays int32) ([]Campaign, error)
 	// Candidates for a sibling: another listing of the same website, not merely the same
 	// domain. A city or a franchise often hosts one page per location under a single
 	// domain, and each page carries its own address. This matches on the path only
@@ -329,10 +355,16 @@ type Querier interface {
 	// A lead the exclusion sweep stopped while its push was in flight stays excluded;
 	// the caller sees that and removes it from the provider again.
 	MarkCampaignLeadPushed(ctx context.Context, arg MarkCampaignLeadPushedParams) (CampaignLead, error)
+	// The lead no longer occupies an Instantly slot. The row, its sends and its
+	// timeline stay. A lead still mid-sequence is closed as completed, since the
+	// mirror can no longer see it move on; a cleanup run records itself on the lead.
+	MarkCampaignLeadRemovedFromProvider(ctx context.Context, arg MarkCampaignLeadRemovedFromProviderParams) (CampaignLead, error)
 	MarkCampaignLeadStatus(ctx context.Context, arg MarkCampaignLeadStatusParams) (CampaignLead, error)
 	MarkCampaignLeadTerminal(ctx context.Context, arg MarkCampaignLeadTerminalParams) error
 	MarkCampaignPaused(ctx context.Context, id uuid.UUID) (Campaign, error)
-	MarkCampaignReady(ctx context.Context, id uuid.UUID) (Campaign, error)
+	// A launch now. It also takes over a scheduled campaign, which is how "launch now
+	// instead" works; the new request id makes the scheduled job stale.
+	MarkCampaignReady(ctx context.Context, arg MarkCampaignReadyParams) (Campaign, error)
 	// The row says "registering" before the billable call is made, so a worker that dies
 	// mid-call leaves a row that is reconciled with Cloudflare instead of retried blind.
 	MarkDomainItemRegistering(ctx context.Context, id uuid.UUID) (DomainPurchaseItem, error)
@@ -385,6 +417,10 @@ type Querier interface {
 	ReopenWorkspaceDomain(ctx context.Context, id uuid.UUID) (WorkspaceDomain, error)
 	ReplaceVariantComponents(ctx context.Context, variantID uuid.UUID) error
 	RequeueNewsletterSubscription(ctx context.Context, arg RequeueNewsletterSubscriptionParams) (NewsletterSubscription, error)
+	// A new launch request gives the leads an earlier one could not push another try:
+	// the ones it gave up on and the ones a killed job left claimed (longer ago than
+	// any push job runs). Only leads Instantly never acknowledged.
+	RequeueUnpushedCampaignLeads(ctx context.Context, campaignID uuid.UUID) (int64, error)
 	ResetDomainItemPending(ctx context.Context, id uuid.UUID) error
 	// A retry sends refused mailboxes again. An address that belonged to someone else is
 	// left failed: sending it again would count it as ours.
@@ -399,6 +435,8 @@ type Querier interface {
 	RetryWorkspaceDomain(ctx context.Context, id uuid.UUID) (WorkspaceDomain, error)
 	RevokeConsent(ctx context.Context, arg RevokeConsentParams) (ContactConsent, error)
 	SaveProviderRun(ctx context.Context, arg SaveProviderRunParams) error
+	// A launch later, or a new time for one already scheduled.
+	ScheduleCampaignLaunch(ctx context.Context, arg ScheduleCampaignLaunchParams) (Campaign, error)
 	ScraperCounters(ctx context.Context) (ScraperCountersRow, error)
 	SetAIGenerationFailed(ctx context.Context, arg SetAIGenerationFailedParams) error
 	SetAIGenerationImported(ctx context.Context, arg SetAIGenerationImportedParams) (AiGeneration, error)
@@ -414,6 +452,7 @@ type Querier interface {
 	SetCampaignSyncError(ctx context.Context, arg SetCampaignSyncErrorParams) error
 	SetChatGPTNeedsReconnect(ctx context.Context, lastError *string) error
 	SetChatGPTTokens(ctx context.Context, arg SetChatGPTTokensParams) error
+	SetCleanupSettings(ctx context.Context, arg SetCleanupSettingsParams) (CampaignSetting, error)
 	// The trigger enforces the rules; this statement only moves the pointer.
 	SetContactStage(ctx context.Context, arg SetContactStageParams) (Contact, error)
 	SetDefaultAudience(ctx context.Context, audienceID uuid.NullUUID) error
@@ -440,6 +479,7 @@ type Querier interface {
 	SetWorkspaceAdminEmail(ctx context.Context, adminEmail *string) (WorkspaceSetting, error)
 	SetWorkspaceServiceAccount(ctx context.Context, arg SetWorkspaceServiceAccountParams) (WorkspaceSetting, error)
 	SetWorkspaceVerificationToken(ctx context.Context, arg SetWorkspaceVerificationTokenParams) error
+	StartCleanupRun(ctx context.Context, arg StartCleanupRunParams) (InstantlyCleanupRun, error)
 	StartDomainPurchase(ctx context.Context, id uuid.UUID) (DomainPurchase, error)
 	StartInstantlyConnection(ctx context.Context, arg StartInstantlyConnectionParams) (WorkspaceMailbox, error)
 	SucceedDomainItem(ctx context.Context, arg SucceedDomainItemParams) error
@@ -449,11 +489,15 @@ type Querier interface {
 	// Every non-terminal lead of a suppressed contact stops where it is.
 	SuppressCampaignLeadsForContact(ctx context.Context, contactID uuid.UUID) ([]CampaignLead, error)
 	SuppressContact(ctx context.Context, arg SuppressContactParams) (Contact, error)
+	// A lead a cleanup run tried and could not delete: tagging it keeps the same run
+	// from picking it again.
+	TagCampaignLeadCleanupRun(ctx context.Context, arg TagCampaignLeadCleanupRunParams) error
 	TakeChatGPTOAuthState(ctx context.Context, stateHash string) (AiChatgptOauthState, error)
 	TouchContactEvent(ctx context.Context, arg TouchContactEventParams) error
 	// An attempt Google refused without looking at it (throttled, or the credentials
 	// were refused) does not count.
 	UncountWorkspaceMailboxAttempt(ctx context.Context, id uuid.UUID) error
+	UnscheduleCampaign(ctx context.Context, id uuid.UUID) (Campaign, error)
 	UpdateBusinessFlags(ctx context.Context, arg UpdateBusinessFlagsParams) (uuid.UUID, error)
 	UpdateBusinessFromListing(ctx context.Context, arg UpdateBusinessFromListingParams) (Business, error)
 	UpdateCampaign(ctx context.Context, arg UpdateCampaignParams) (Campaign, error)
@@ -477,6 +521,7 @@ type Querier interface {
 	UpdateVerificationPass2Inconclusive(ctx context.Context, arg UpdateVerificationPass2InconclusiveParams) (EmailVerification, error)
 	UpsertBusinessByPlaceID(ctx context.Context, arg UpsertBusinessByPlaceIDParams) (Business, error)
 	UpsertCampaignAnalyticsSnapshot(ctx context.Context, arg UpsertCampaignAnalyticsSnapshotParams) error
+	UpsertCampaignStatsDaily(ctx context.Context, arg UpsertCampaignStatsDailyParams) error
 	UpsertChatGPTConnection(ctx context.Context, arg UpsertChatGPTConnectionParams) (AiChatgptConnection, error)
 	// Creates the contact the first time an address is seen. The no-op DO UPDATE lets one
 	// statement insert and return the existing row; it never overwrites the stage.

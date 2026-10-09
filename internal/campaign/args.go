@@ -15,6 +15,7 @@ import (
 // migration rather than a refactor.
 const (
 	KindLaunch                  = "campaign_launch"
+	KindPrepareLaunch           = "campaign_prepare_launch"
 	KindPushLeads               = "campaign_push_leads"
 	KindActivate                = "campaign_activate"
 	KindRemoveLead              = "campaign_remove_lead"
@@ -29,6 +30,8 @@ const (
 	KindNewsletterSyncAudiences = "newsletter_sync_audiences"
 	KindExclusionSweep          = "campaign_exclusion_sweep"
 	KindSyncInbox               = "campaign_sync_inbox"
+	KindInstantlyCleanup        = "campaign_instantly_cleanup"
+	KindInstantlyCleanupAuto    = "campaign_instantly_cleanup_auto"
 )
 
 // Newsletter push actions.
@@ -54,8 +57,15 @@ func opts(q string, attempts int, meta []byte) river.InsertOpts {
 }
 
 // LaunchArgs creates the Instantly campaign and starts pushing leads.
+//
+// RequestID is the launch request this job serves, stored on the campaign as
+// launch_request_id. Each launch, schedule or reschedule writes a fresh one, so a
+// job from an earlier request finds a different id on the campaign and stops
+// instead of launching twice. A zero RequestID is a job queued before the field
+// existed and skips the check.
 type LaunchArgs struct {
 	CampaignID uuid.UUID `json:"campaign_id" river:"unique"`
+	RequestID  uuid.UUID `json:"request_id,omitempty" river:"unique"`
 }
 
 // Kind implements river.JobArgs.
@@ -66,11 +76,31 @@ func (a LaunchArgs) InsertOpts() river.InsertOpts {
 	return opts(queue.QueueCampaignPush, 5, Metadata(a.CampaignID))
 }
 
+// PrepareLaunchArgs readies a scheduled campaign at Instantly the moment it is
+// scheduled: frees contact slots, creates the Instantly campaign and pushes the
+// leads. Activation still waits for the scheduled LaunchArgs. RequestID works as
+// it does on LaunchArgs: a rescheduled or unscheduled launch makes it stand down.
+type PrepareLaunchArgs struct {
+	CampaignID uuid.UUID `json:"campaign_id" river:"unique"`
+	RequestID  uuid.UUID `json:"request_id" river:"unique"`
+}
+
+// Kind implements river.JobArgs.
+func (PrepareLaunchArgs) Kind() string { return KindPrepareLaunch }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (a PrepareLaunchArgs) InsertOpts() river.InsertOpts {
+	return opts(queue.QueueCampaignPush, 5, Metadata(a.CampaignID))
+}
+
 // PushLeadsArgs pushes one batch of pending leads. Batch makes each batch its own
-// unique job, so a retry of batch n cannot collide with batch n+1.
+// unique job, so a retry of batch n cannot collide with batch n+1. Round names the
+// chain the batch belongs to (a prepare or a launch of one request), so a later
+// chain is not taken for a duplicate of an earlier one that already completed.
 type PushLeadsArgs struct {
 	CampaignID uuid.UUID `json:"campaign_id" river:"unique"`
 	Batch      int       `json:"batch" river:"unique"`
+	Round      string    `json:"round,omitempty" river:"unique"`
 }
 
 // Kind implements river.JobArgs.
@@ -123,6 +153,33 @@ func (ExclusionSweepArgs) Kind() string { return KindExclusionSweep }
 // InsertOpts implements river.JobArgsWithInsertOpts.
 func (ExclusionSweepArgs) InsertOpts() river.InsertOpts {
 	return opts(queue.QueueCampaignPush, 10, nil)
+}
+
+// InstantlyCleanupArgs deletes one batch of a cleanup run's leads from Instantly.
+// Batch makes each batch its own unique job, as the lead push does.
+type InstantlyCleanupArgs struct {
+	RunID uuid.UUID `json:"run_id" river:"unique"`
+	Batch int       `json:"batch" river:"unique"`
+}
+
+// Kind implements river.JobArgs.
+func (InstantlyCleanupArgs) Kind() string { return KindInstantlyCleanup }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (InstantlyCleanupArgs) InsertOpts() river.InsertOpts {
+	return opts(queue.QueueCampaignPush, 5, nil)
+}
+
+// InstantlyCleanupAutoArgs is the periodic pass that starts a cleanup run with the
+// saved policy when automatic cleanup is switched on.
+type InstantlyCleanupAutoArgs struct{}
+
+// Kind implements river.JobArgs.
+func (InstantlyCleanupAutoArgs) Kind() string { return KindInstantlyCleanupAuto }
+
+// InsertOpts implements river.JobArgsWithInsertOpts.
+func (InstantlyCleanupAutoArgs) InsertOpts() river.InsertOpts {
+	return opts(queue.QueueCampaignSync, 1, nil)
 }
 
 // ProcessEventArgs applies one stored provider event.

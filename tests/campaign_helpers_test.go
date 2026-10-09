@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -298,7 +299,27 @@ func (h *harness) importLeads(campaignID string, filter string) map[string]any {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		h.t.Fatalf("could not decode the import result: %v", err)
 	}
+	// Launching needs leads the third-party verifier called deliverable.
+	h.setThirdPartyVerdict(campaignID, "deliverable")
 	return out
+}
+
+// setThirdPartyVerdict records a third-party verdict for every lead in a campaign
+// that has none yet, as if the paid verifier had checked them. A third-party
+// result is write-once, so an address that already holds one keeps it.
+func (h *harness) setThirdPartyVerdict(campaignID, status string) {
+	h.t.Helper()
+	if _, err := h.app.Store().Pool().Exec(context.Background(), `
+		INSERT INTO email_verifications (id, email, domain, pass2_status, pass2_verified_at, third_party_sent_at)
+		SELECT gen_random_uuid(), c.email, c.domain, $2, now(), now()
+		FROM campaign_leads cl JOIN contacts c ON c.id = cl.contact_id
+		WHERE cl.campaign_id = $1
+		ON CONFLICT (email) DO UPDATE SET pass2_status = excluded.pass2_status,
+		       pass2_verified_at = excluded.pass2_verified_at, third_party_sent_at = excluded.third_party_sent_at
+		WHERE email_verifications.third_party_sent_at IS NULL`,
+		campaignID, status); err != nil {
+		h.t.Fatalf("could not set the third-party verdict: %v", err)
+	}
 }
 
 // estimateImport asks what the same import would do, without doing it.

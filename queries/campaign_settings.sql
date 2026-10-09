@@ -22,3 +22,14 @@ WHERE id = 1;
 
 -- name: SetDefaultAudience :exec
 UPDATE campaign_settings SET default_audience_id = sqlc.narg('audience_id'), updated_at = now() WHERE id = 1;
+
+-- name: SetCleanupSettings :one
+UPDATE campaign_settings
+SET instantly_contact_limit = sqlc.narg('contact_limit'),
+    cleanup_auto_enabled    = sqlc.arg('auto_enabled'),
+    cleanup_scope           = sqlc.arg('scope'),
+    cleanup_min_idle_days   = sqlc.arg('min_idle_days'),
+    cleanup_include_replied = sqlc.arg('include_replied'),
+    updated_at              = now()
+WHERE id = 1
+RETURNING *;

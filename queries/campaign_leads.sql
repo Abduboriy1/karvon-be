@@ -39,6 +39,15 @@ UPDATE campaign_leads
 SET status = 'pending', claimed_at = NULL, last_push_error = sqlc.narg('error'), updated_at = now()
 WHERE campaign_id = sqlc.arg('campaign_id') AND status = 'pushing' AND id = ANY(sqlc.arg('ids')::uuid[]);
 
+-- name: RequeueUnpushedCampaignLeads :execrows
+-- A new launch request gives the leads an earlier one could not push another try:
+-- the ones it gave up on and the ones a killed job left claimed (longer ago than
+-- any push job runs). Only leads Instantly never acknowledged.
+UPDATE campaign_leads
+SET status = 'pending', claimed_at = NULL, updated_at = now()
+WHERE campaign_id = $1 AND instantly_lead_id IS NULL
+  AND (status = 'failed' OR (status = 'pushing' AND claimed_at < now() - interval '10 minutes'));
+
 -- name: MarkCampaignLeadPushed :one
 -- A lead the exclusion sweep stopped while its push was in flight stays excluded;
 -- the caller sees that and removes it from the provider again.
@@ -130,6 +139,15 @@ JOIN contacts c ON c.id = cl.contact_id
 WHERE cl.campaign_id = $1 AND cl.status = 'pending' AND c.suppressed_at IS NULL
   AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = c.email);
 
+-- name: CountThirdPartyVerifiedPendingCampaignLeads :one
+-- Pending leads whose address the paid third-party verifier called deliverable.
+SELECT count(*) FROM campaign_leads cl
+JOIN contacts c ON c.id = cl.contact_id
+JOIN email_verifications v ON v.email = c.email
+WHERE cl.campaign_id = $1 AND cl.status = 'pending' AND c.suppressed_at IS NULL
+  AND v.pass2_status = 'deliverable'
+  AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = c.email);
+
 -- name: ListPushedCampaignLeads :many
 SELECT * FROM campaign_leads WHERE campaign_id = $1 AND instantly_lead_id IS NOT NULL ORDER BY created_at;
 
@@ -144,4 +162,25 @@ SELECT cl.* FROM campaign_leads cl
 JOIN campaigns c ON c.id = cl.campaign_id
 WHERE cl.contact_id = $1
   AND cl.instantly_lead_id IS NOT NULL
+  AND cl.provider_removed_at IS NULL
   AND c.status <> 'archived';
+
+-- name: MarkCampaignLeadRemovedFromProvider :one
+-- The lead no longer occupies an Instantly slot. The row, its sends and its
+-- timeline stay. A lead still mid-sequence is closed as completed, since the
+-- mirror can no longer see it move on; a cleanup run records itself on the lead.
+UPDATE campaign_leads
+SET provider_removed_at     = sqlc.arg('removed_at'),
+    provider_removed_reason = sqlc.arg('reason'),
+    cleanup_run_id          = COALESCE(sqlc.narg('cleanup_run_id'), cleanup_run_id),
+    status                  = CASE WHEN status IN ('active', 'paused') THEN 'completed' ELSE status END,
+    claimed_at              = NULL,
+    updated_at              = now()
+WHERE id = sqlc.arg('id') AND provider_removed_at IS NULL
+RETURNING *;
+
+-- name: TagCampaignLeadCleanupRun :exec
+-- A lead a cleanup run tried and could not delete: tagging it keeps the same run
+-- from picking it again.
+UPDATE campaign_leads SET cleanup_run_id = sqlc.arg('cleanup_run_id'), updated_at = now()
+WHERE id = sqlc.arg('id') AND provider_removed_at IS NULL;

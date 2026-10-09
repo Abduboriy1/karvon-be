@@ -12,7 +12,7 @@ import (
 )
 
 const getCampaignSettings = `-- name: GetCampaignSettings :one
-SELECT id, instantly_webhook_token, instantly_webhook_secret_enc, instantly_webhook_id, instantly_webhook_url, instantly_webhook_status, instantly_webhook_error, default_audience_id, updated_at FROM campaign_settings WHERE id = 1
+SELECT id, instantly_webhook_token, instantly_webhook_secret_enc, instantly_webhook_id, instantly_webhook_url, instantly_webhook_status, instantly_webhook_error, default_audience_id, updated_at, instantly_contact_limit, cleanup_auto_enabled, cleanup_scope, cleanup_min_idle_days, cleanup_include_replied FROM campaign_settings WHERE id = 1
 `
 
 func (q *Queries) GetCampaignSettings(ctx context.Context) (CampaignSetting, error) {
@@ -28,6 +28,59 @@ func (q *Queries) GetCampaignSettings(ctx context.Context) (CampaignSetting, err
 		&i.InstantlyWebhookError,
 		&i.DefaultAudienceID,
 		&i.UpdatedAt,
+		&i.InstantlyContactLimit,
+		&i.CleanupAutoEnabled,
+		&i.CleanupScope,
+		&i.CleanupMinIdleDays,
+		&i.CleanupIncludeReplied,
+	)
+	return i, err
+}
+
+const setCleanupSettings = `-- name: SetCleanupSettings :one
+UPDATE campaign_settings
+SET instantly_contact_limit = $1,
+    cleanup_auto_enabled    = $2,
+    cleanup_scope           = $3,
+    cleanup_min_idle_days   = $4,
+    cleanup_include_replied = $5,
+    updated_at              = now()
+WHERE id = 1
+RETURNING id, instantly_webhook_token, instantly_webhook_secret_enc, instantly_webhook_id, instantly_webhook_url, instantly_webhook_status, instantly_webhook_error, default_audience_id, updated_at, instantly_contact_limit, cleanup_auto_enabled, cleanup_scope, cleanup_min_idle_days, cleanup_include_replied
+`
+
+type SetCleanupSettingsParams struct {
+	ContactLimit   *int32
+	AutoEnabled    bool
+	Scope          string
+	MinIdleDays    int32
+	IncludeReplied bool
+}
+
+func (q *Queries) SetCleanupSettings(ctx context.Context, arg SetCleanupSettingsParams) (CampaignSetting, error) {
+	row := q.db.QueryRow(ctx, setCleanupSettings,
+		arg.ContactLimit,
+		arg.AutoEnabled,
+		arg.Scope,
+		arg.MinIdleDays,
+		arg.IncludeReplied,
+	)
+	var i CampaignSetting
+	err := row.Scan(
+		&i.ID,
+		&i.InstantlyWebhookToken,
+		&i.InstantlyWebhookSecretEnc,
+		&i.InstantlyWebhookID,
+		&i.InstantlyWebhookUrl,
+		&i.InstantlyWebhookStatus,
+		&i.InstantlyWebhookError,
+		&i.DefaultAudienceID,
+		&i.UpdatedAt,
+		&i.InstantlyContactLimit,
+		&i.CleanupAutoEnabled,
+		&i.CleanupScope,
+		&i.CleanupMinIdleDays,
+		&i.CleanupIncludeReplied,
 	)
 	return i, err
 }
@@ -51,7 +104,7 @@ SET instantly_webhook_token      = $1,
     instantly_webhook_error      = $6,
     updated_at                   = now()
 WHERE id = 1
-RETURNING id, instantly_webhook_token, instantly_webhook_secret_enc, instantly_webhook_id, instantly_webhook_url, instantly_webhook_status, instantly_webhook_error, default_audience_id, updated_at
+RETURNING id, instantly_webhook_token, instantly_webhook_secret_enc, instantly_webhook_id, instantly_webhook_url, instantly_webhook_status, instantly_webhook_error, default_audience_id, updated_at, instantly_contact_limit, cleanup_auto_enabled, cleanup_scope, cleanup_min_idle_days, cleanup_include_replied
 `
 
 type SetInstantlyWebhookParams struct {
@@ -83,6 +136,11 @@ func (q *Queries) SetInstantlyWebhook(ctx context.Context, arg SetInstantlyWebho
 		&i.InstantlyWebhookError,
 		&i.DefaultAudienceID,
 		&i.UpdatedAt,
+		&i.InstantlyContactLimit,
+		&i.CleanupAutoEnabled,
+		&i.CleanupScope,
+		&i.CleanupMinIdleDays,
+		&i.CleanupIncludeReplied,
 	)
 	return i, err
 }

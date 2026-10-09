@@ -24,8 +24,11 @@ type ImportResult struct {
 	// SkippedExcluded counts addresses a global exclusion keeps out.
 	SkippedExcluded int
 	SkippedExisting int
-	SkippedInvalid  int
-	Capped          bool
+	// SkippedContacted counts addresses some campaign already emailed, kept out
+	// because the filter asked for it.
+	SkippedContacted int
+	SkippedInvalid   int
+	Capped           bool
 }
 
 // LeadDetail is one lead with its assignments, sends and timeline.
@@ -86,6 +89,10 @@ func (s *Service) EstimateImport(ctx context.Context, campaignID uuid.UUID, f db
 			result.SkippedSuppressed++
 			continue
 		}
+		if f.ExcludeContacted && state.Contacted {
+			result.SkippedContacted++
+			continue
+		}
 		if _, duplicate := seen[email]; duplicate || state.Existing {
 			result.SkippedExisting++
 			continue
@@ -98,7 +105,8 @@ func (s *Service) EstimateImport(ctx context.Context, campaignID uuid.UUID, f db
 
 // ImportLeads brings the businesses a filter matches into a campaign as contacts
 // and campaign leads. A globally excluded address never becomes a contact or a
-// lead, a suppressed contact is never imported, an address the campaign already
+// lead, a suppressed contact is never imported, an address some campaign already
+// emailed is skipped when the filter asks for it, an address the campaign already
 // has is skipped, and an address that fails basic acceptance is counted as invalid.
 func (s *Service) ImportLeads(ctx context.Context, campaignID uuid.UUID, f db.ImportFilter) (ImportResult, error) {
 	camp, err := s.campaign(ctx, campaignID)
@@ -128,6 +136,12 @@ func (s *Service) ImportLeads(ctx context.Context, campaignID uuid.UUID, f db.Im
 	if err != nil {
 		return ImportResult{}, apperr.Internal(err)
 	}
+	contacted := map[string]struct{}{}
+	if f.ExcludeContacted {
+		if contacted, err = s.store.ContactedEmails(ctx, emails); err != nil {
+			return ImportResult{}, apperr.Internal(err)
+		}
+	}
 	// Businesses are loaded once per import for names and locations.
 	err = s.store.InTx(ctx, func(q *dbgen.Queries) error {
 		for _, c := range candidates {
@@ -151,6 +165,10 @@ func (s *Service) ImportLeads(ctx context.Context, campaignID uuid.UUID, f db.Im
 			}
 			if contact.SuppressedAt != nil {
 				result.SkippedSuppressed++
+				continue
+			}
+			if _, skip := contacted[email]; skip {
+				result.SkippedContacted++
 				continue
 			}
 			lead, err := q.InsertCampaignLead(ctx, dbgen.InsertCampaignLeadParams{

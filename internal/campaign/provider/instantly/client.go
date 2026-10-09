@@ -225,6 +225,15 @@ type ListLeadsInput struct {
 	StartingAfter string   `json:"starting_after,omitempty"`
 }
 
+// DeleteLeadsInput is a bulk delete from one campaign. With IDs set only those
+// leads go; without, every lead in the campaign does, up to Limit.
+type DeleteLeadsInput struct {
+	CampaignID string   `json:"campaign_id"`
+	IDs        []string `json:"ids,omitempty"`
+	// Limit caps the delete; Instantly accepts 1 to 10000, and 0 leaves it out.
+	Limit int `json:"limit,omitempty"`
+}
+
 // LeadPage is one page of leads.
 type LeadPage struct {
 	Items             []Lead `json:"items"`
@@ -489,6 +498,8 @@ type Client interface {
 	AddLeads(ctx context.Context, in AddLeadsInput) (AddLeadsResult, error)
 	ListLeads(ctx context.Context, in ListLeadsInput) (LeadPage, error)
 	DeleteLead(ctx context.Context, id string) error
+	// DeleteLeads deletes leads of one campaign in bulk and returns how many went.
+	DeleteLeads(ctx context.Context, in DeleteLeadsInput) (int, error)
 	UpdateInterestStatus(ctx context.Context, in InterestInput) error
 	GetBackgroundJob(ctx context.Context, id string) (BackgroundJob, error)
 

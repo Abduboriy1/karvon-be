@@ -79,6 +79,18 @@ func (q *Queries) FinishSyncRun(ctx context.Context, arg FinishSyncRunParams) er
 	return err
 }
 
+const lastCampaignStatsDay = `-- name: LastCampaignStatsDay :one
+SELECT max(day)::date FROM campaign_stats_daily WHERE campaign_id = $1
+`
+
+// The latest day held for a campaign; NULL before its first daily fetch.
+func (q *Queries) LastCampaignStatsDay(ctx context.Context, campaignID uuid.UUID) (pgtype.Date, error) {
+	row := q.db.QueryRow(ctx, lastCampaignStatsDay, campaignID)
+	var column_1 pgtype.Date
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const lastSyncRun = `-- name: LastSyncRun :one
 SELECT id, kind, status, target_id, started_at, finished_at, items_seen, items_updated, error, details FROM sync_runs WHERE kind = $1 AND status = 'done' ORDER BY finished_at DESC LIMIT 1
 `
@@ -228,6 +240,52 @@ func (q *Queries) UpsertCampaignAnalyticsSnapshot(ctx context.Context, arg Upser
 		arg.Day,
 		arg.Source,
 		arg.Metrics,
+	)
+	return err
+}
+
+const upsertCampaignStatsDaily = `-- name: UpsertCampaignStatsDaily :exec
+INSERT INTO campaign_stats_daily (campaign_id, day, sent, contacted, new_leads_contacted, opened, unique_opened,
+                                  replies, unique_replies, clicks, unique_clicks, opportunities, fetched_at)
+VALUES ($1, $2, $3, $4, $5,
+        $6, $7, $8, $9,
+        $10, $11, $12, now())
+ON CONFLICT (campaign_id, day) DO UPDATE
+SET sent = EXCLUDED.sent, contacted = EXCLUDED.contacted, new_leads_contacted = EXCLUDED.new_leads_contacted,
+    opened = EXCLUDED.opened, unique_opened = EXCLUDED.unique_opened, replies = EXCLUDED.replies,
+    unique_replies = EXCLUDED.unique_replies, clicks = EXCLUDED.clicks, unique_clicks = EXCLUDED.unique_clicks,
+    opportunities = EXCLUDED.opportunities, fetched_at = now()
+`
+
+type UpsertCampaignStatsDailyParams struct {
+	CampaignID        uuid.UUID
+	Day               pgtype.Date
+	Sent              int32
+	Contacted         int32
+	NewLeadsContacted int32
+	Opened            int32
+	UniqueOpened      int32
+	Replies           int32
+	UniqueReplies     int32
+	Clicks            int32
+	UniqueClicks      int32
+	Opportunities     int32
+}
+
+func (q *Queries) UpsertCampaignStatsDaily(ctx context.Context, arg UpsertCampaignStatsDailyParams) error {
+	_, err := q.db.Exec(ctx, upsertCampaignStatsDaily,
+		arg.CampaignID,
+		arg.Day,
+		arg.Sent,
+		arg.Contacted,
+		arg.NewLeadsContacted,
+		arg.Opened,
+		arg.UniqueOpened,
+		arg.Replies,
+		arg.UniqueReplies,
+		arg.Clicks,
+		arg.UniqueClicks,
+		arg.Opportunities,
 	)
 	return err
 }

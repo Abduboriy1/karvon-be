@@ -326,6 +326,42 @@ func TestAddLeadsSendsSkipIfInCampaignAndCustomVariables(t *testing.T) {
 	}
 }
 
+// Instantly takes well over the normal call budget on a bulk add and keeps
+// working after the caller gives up, so the bulk lead calls get their own,
+// longer budget while every other call keeps the short one.
+func TestBulkLeadCallsGetTheLongerBudget(t *testing.T) {
+	var deleteBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/leads/add":
+			writeJSON(t, w, http.StatusOK, map[string]any{"total_sent": 1, "leads_uploaded": 1})
+		case r.Method == http.MethodDelete && r.URL.Path == "/leads":
+			deleteBody = decodeBody(t, r)
+			writeJSON(t, w, http.StatusOK, map[string]any{"count": 2})
+		default:
+			writeJSON(t, w, http.StatusOK, map[string]any{"items": []any{}})
+		}
+	}))
+	defer server.Close()
+	client := newClient(t, server, instantly.Config{Timeout: 50 * time.Millisecond, BulkTimeout: 2 * time.Second})
+	ctx := context.Background()
+
+	if _, err := client.AddLeads(ctx, instantly.AddLeadsInput{CampaignID: "c1", Leads: []instantly.LeadInput{{Email: "a@x.test"}}}); err != nil {
+		t.Fatalf("AddLeads inside the bulk budget: %v", err)
+	}
+	n, err := client.DeleteLeads(ctx, instantly.DeleteLeadsInput{CampaignID: "c1", IDs: []string{"l1", "l2"}, Limit: 2})
+	if err != nil || n != 2 {
+		t.Fatalf("DeleteLeads = %d, %v; want 2, nil", n, err)
+	}
+	if deleteBody["campaign_id"] != "c1" || deleteBody["limit"] != float64(2) {
+		t.Errorf("bulk delete body = %v", deleteBody)
+	}
+	if _, err := client.ListLeads(ctx, instantly.ListLeadsInput{CampaignID: "c1"}); err == nil {
+		t.Fatal("ListLeads finished past the normal budget; want a timeout")
+	}
+}
+
 func TestCreateCampaignOverlaysSettingsAtTopLevel(t *testing.T) {
 	var got map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

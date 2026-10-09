@@ -38,9 +38,14 @@ func SeedHex(seed [32]byte) string {
 
 // Pick maps the first 8 bytes of the seed (big-endian) onto [0, total weight) and
 // walks the variants sorted by ID, so the result does not depend on input order.
-// Variants with a zero or negative weight are never picked. Returns false when no
-// variant has a positive weight.
+// Weights are optional: when none is positive every variant counts equally, so
+// a step with variants attached always has something to hand out. Otherwise a
+// variant with a zero or negative weight is never picked. Returns false only
+// when there are no variants at all.
 func Pick(seed [32]byte, variants []Weighted) (uuid.UUID, bool) {
+	if len(variants) == 0 {
+		return uuid.Nil, false
+	}
 	ordered := make([]Weighted, 0, len(variants))
 	total := 0
 	for _, v := range variants {
@@ -51,7 +56,11 @@ func Pick(seed [32]byte, variants []Weighted) (uuid.UUID, bool) {
 		total += v.Weight
 	}
 	if total <= 0 {
-		return uuid.Nil, false
+		ordered = ordered[:0]
+		for _, v := range variants {
+			ordered = append(ordered, Weighted{ID: v.ID, Weight: 1})
+		}
+		total = len(ordered)
 	}
 	sort.Slice(ordered, func(i, j int) bool {
 		return bytes.Compare(ordered[i].ID[:], ordered[j].ID[:]) < 0
@@ -72,28 +81,14 @@ func Pick(seed [32]byte, variants []Weighted) (uuid.UUID, bool) {
 }
 
 // ValidateWeights checks a set of variant weights: every weight must be within
-// [0, 100], they must sum to exactly 100 and at least one must be positive. The
-// error message is suitable for a 422 response.
+// [0, 100]. Weights are optional relative shares — Pick splits evenly when none
+// is positive — so neither their total nor a positive one is required. The error
+// message is suitable for a 422 response.
 func ValidateWeights(weights []int) error {
-	if len(weights) == 0 {
-		return errors.New("at least one variant weight is required")
-	}
-	sum := 0
-	positive := false
 	for _, w := range weights {
 		if w < 0 || w > 100 {
 			return errors.New("each variant weight must be between 0 and 100")
 		}
-		if w > 0 {
-			positive = true
-		}
-		sum += w
-	}
-	if sum != 100 {
-		return errors.New("variant weights must add up to 100, got " + strconv.Itoa(sum))
-	}
-	if !positive {
-		return errors.New("at least one variant must have a weight above 0")
 	}
 	return nil
 }

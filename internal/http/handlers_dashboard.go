@@ -53,6 +53,10 @@ func toAPIDashboardReport(in stats.Report) gen.DashboardReport {
 			MailboxesCents:    p.MailboxesCents,
 			ToolsCents:        p.ToolsCents,
 			CostCents:         p.CostCents,
+
+			ImportedSends:      p.ImportedSends,
+			ImportedReplied:    p.ImportedReplied,
+			ImportedInterested: p.ImportedInterested,
 		})
 	}
 
@@ -62,6 +66,7 @@ func toAPIDashboardReport(in stats.Report) gen.DashboardReport {
 			Id:              c.ID,
 			Name:            c.Name,
 			Status:          c.Status,
+			Source:          gen.CampaignSource(c.Source),
 			LaunchedAt:      c.LaunchedAt,
 			LeadsTotal:      c.LeadsTotal,
 			Sends:           c.Sends,
@@ -123,6 +128,7 @@ func toAPIDashboardSummary(in stats.Summary) gen.DashboardSummary {
 	if notes == nil {
 		notes = []string{}
 	}
+	im := in.Imported
 
 	return gen.DashboardSummary{
 		Costs: gen.DashboardCosts{
@@ -136,6 +142,7 @@ func toAPIDashboardSummary(in stats.Summary) gen.DashboardSummary {
 		},
 		LeadCost: gen.DashboardLeadCost{
 			SuccessfulLeads:            in.LeadCost.SuccessfulLeads,
+			ImportedSuccessfulLeads:    in.LeadCost.ImportedSuccessfulLeads,
 			CostPerSuccessfulLeadCents: in.LeadCost.CostPerSuccessfulLeadCents,
 			Definition:                 in.LeadCost.Definition,
 			Formula:                    in.LeadCost.Formula,
@@ -168,6 +175,18 @@ func toAPIDashboardSummary(in stats.Summary) gen.DashboardSummary {
 			ReplyRate:         in.ReplyRate,
 			PositiveReplyRate: in.PositiveReplyRate,
 			BounceRate:        in.BounceRate,
+			Imported: gen.DashboardImported{
+				Campaigns:      im.Campaigns,
+				Sends:          im.Sends,
+				LeadsContacted: im.LeadsContacted,
+				Opened:         im.Opened,
+				Clicked:        im.Clicked,
+				Replied:        im.Replied,
+				Interested:     im.Interested,
+				OpenRate:       sendRate(im.Opened, im.Sends),
+				ReplyRate:      sendRate(im.Replied, im.Sends),
+				InterestedRate: sendRate(im.Interested, im.Sends),
+			},
 		},
 	}
 }

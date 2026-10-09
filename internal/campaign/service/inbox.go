@@ -96,6 +96,16 @@ func (s *Service) MirrorEmail(ctx context.Context, e instantly.Email) (bool, err
 	return inserted, nil
 }
 
+// LinkInbox links the mirrored emails stored before their campaign was imported
+// or their lead became a contact, and reports how many it changed.
+func (s *Service) LinkInbox(ctx context.Context) (int64, error) {
+	n, err := s.store.LinkInboxEmails(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("inbox: link emails: %w", err)
+	}
+	return n, nil
+}
+
 // preview is Instantly's own preview, or the first line or so of the text body
 // when the list was fetched without one.
 func preview(e instantly.Email) string {

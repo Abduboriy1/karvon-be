@@ -63,6 +63,13 @@ func (w *SyncInboxWorker) Work(ctx context.Context, rj *river.Job[campaign.SyncI
 // first, so a run cut short by the page cap leaves no gap behind it.
 func (w *SyncInboxWorker) sync(ctx context.Context, client instantly.Client, run *syncRun) error {
 	d := w.deps
+	// The walk below only moves forward, so what was mirrored before its campaign
+	// or contact existed is linked here instead.
+	linked, err := d.Service.LinkInbox(ctx)
+	if err != nil {
+		return err
+	}
+	run.details["linked"] = linked
 	since, err := d.Service.InboxSince(ctx)
 	if err != nil {
 		return err

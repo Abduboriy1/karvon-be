@@ -121,7 +121,12 @@ type LeadCostStep struct {
 
 // LeadCost answers "what does one good lead cost us?" and shows the working.
 type LeadCost struct {
+	// SuccessfulLeads counts every campaign's: ours, plus the opportunities of the
+	// campaigns started in Instantly, which the spend paid for just the same.
 	SuccessfulLeads int64
+	// ImportedSuccessfulLeads is the part of SuccessfulLeads that is Instantly's
+	// opportunity count.
+	ImportedSuccessfulLeads int64
 	// CostPerSuccessfulLeadCents is total spend over successful leads, to a
 	// hundredth of a cent; nil when there were none.
 	CostPerSuccessfulLeadCents *float64
@@ -132,10 +137,19 @@ type LeadCost struct {
 }
 
 // SuccessDefinition is what counts as a successful lead.
-const SuccessDefinition = "A contact who replied positively, was marked interested, or booked a meeting. " +
+const SuccessDefinition = "A contact who replied positively, was marked interested, or booked a meeting " +
+	"— or, in a campaign started in Instantly, an opportunity Instantly recorded. " +
 	"Each contact counts once, however many of those they did."
 
 func (r RecurringCosts) leadCost(in db.DashboardSummary, c Costs, allTime bool) LeadCost {
+	// The outreach steps count every campaign. The spend is one bill — the same
+	// mailboxes, tools and lead data feed the campaigns started in Instantly — so
+	// leaving their results out would overstate what a lead costs.
+	im := in.Imported
+	contacted := in.LeadsContacted + im.LeadsContacted
+	replied := in.Replied + im.Replied
+	successful := in.SuccessfulLeads + im.Interested
+
 	data := c.ScrapingCents
 	dataVerified := c.ScrapingCents + c.VerificationCents
 	total := c.TotalCents
@@ -147,11 +161,11 @@ func (r RecurringCosts) leadCost(in db.DashboardSummary, c Costs, allTime bool) 
 			"%s lead data ÷ %s addresses found"),
 		step(StepVerified, "Verified deliverable addresses", in.EmailsGreen, dataVerified,
 			"("+usd(c.ScrapingCents)+" lead data + "+usd(c.VerificationCents)+" verification) = %s ÷ %s verified addresses"),
-		step(StepContacted, "Leads emailed", in.LeadsContacted, total,
+		step(StepContacted, "Leads emailed", contacted, total,
 			"%s total spend ÷ %s leads emailed"),
-		step(StepReplied, "Replies received", in.Replied, total,
+		step(StepReplied, "Replies received", replied, total,
 			"%s total spend ÷ %s replies"),
-		step(StepSuccessful, "Successful leads", in.SuccessfulLeads, total,
+		step(StepSuccessful, "Successful leads", successful, total,
 			"%s total spend ÷ %s successful leads"),
 	}
 	for i := 1; i < len(steps); i++ {
@@ -162,7 +176,8 @@ func (r RecurringCosts) leadCost(in db.DashboardSummary, c Costs, allTime bool) 
 	}
 
 	out := LeadCost{
-		SuccessfulLeads:            in.SuccessfulLeads,
+		SuccessfulLeads:            successful,
+		ImportedSuccessfulLeads:    im.Interested,
 		CostPerSuccessfulLeadCents: steps[len(steps)-1].CostPerUnitCents,
 		Definition:                 SuccessDefinition,
 		Formula:                    steps[len(steps)-1].Formula,
@@ -186,6 +201,11 @@ func (r RecurringCosts) leadCost(in db.DashboardSummary, c Costs, allTime bool) 
 	if r.MailboxMonthlyCents == 0 || r.FixedMonthlyCents == 0 {
 		out.Notes = append(out.Notes, "Mailbox and tooling subscriptions are only included once their monthly "+
 			"prices are configured.")
+	}
+	if im.Sends > 0 || im.Interested > 0 {
+		out.Notes = append(out.Notes, "Includes campaigns started in Instantly: "+count(im.LeadsContacted)+
+			" leads emailed, "+count(im.Replied)+" replies and "+count(im.Interested)+" opportunities, from "+
+			"Instantly's own figures and counted on the day they happened.")
 	}
 	out.Notes = append(out.Notes,
 		"Verification is priced at the verifier's current rate.",

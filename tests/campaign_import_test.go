@@ -134,3 +134,71 @@ func TestAnImportedCampaignReportsNoMismatch(t *testing.T) {
 		t.Fatalf("mismatch = %v, want []", analytics.Mismatch)
 	}
 }
+
+// A campaign started in Instantly has no sends, leads or events here, so the
+// overview carries Instantly's figures for it beside ours: without them the
+// overview read zero interested while the Unibox held interested replies. A reply
+// mirrored before its campaign was imported is linked to it on a later sync.
+func TestAnImportedCampaignReachesTheOverviewAndItsInbox(t *testing.T) {
+	c := newCampaignHarness(t, 1)
+
+	repliedAt := c.now.Advance(time.Minute)
+	interested := instantly.InterestInterested
+	c.instantly.AddEmails(instantly.Email{
+		ID: "native-reply-1", ThreadID: "native-thread-1", CampaignID: "native-3", LeadEmail: "owner@plumbing.test",
+		FromAddress: "owner@plumbing.test", Subject: "Re: Quick question", Body: instantly.EmailBody{Text: "Sounds good."},
+		InterestStatus: &interested, UEType: instantly.EmailTypeReceived, TimestampEmail: repliedAt, TimestampCreated: repliedAt,
+	})
+	inboxFirst := func(ok func(inboxEmailPayload) bool) inboxEmailPayload {
+		t.Helper()
+		c.mustRequest(http.MethodPost, "/api/v1/inbox/sync", "", http.StatusAccepted)
+		var last inboxListPayload
+		deadline := time.Now().Add(30 * time.Second)
+		for time.Now().Before(deadline) {
+			last = decodeBody[inboxListPayload](t, c.mustRequest(http.MethodGet, "/api/v1/inbox", "", http.StatusOK))
+			if len(last.Data) == 1 && ok(last.Data[0]) {
+				return last.Data[0]
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Fatalf("the inbox never matched; last seen %+v", last.Data)
+		return inboxEmailPayload{}
+	}
+	if got := inboxFirst(func(inboxEmailPayload) bool { return true }); got.CampaignName != nil {
+		t.Fatalf("the reply is linked to %q before its campaign exists", *got.CampaignName)
+	}
+
+	c.instantly.PutCampaign(instantly.Campaign{
+		ID: "native-3", Name: "Austin plumbers", Status: instantly.CampaignStatusActive,
+		Sequences:        []instantly.Sequence{{Steps: []instantly.Step{{Type: "email"}}}},
+		TimestampCreated: time.Now().Add(-24 * time.Hour).UTC(),
+	}, instantly.CampaignAnalytics{
+		LeadsCount: 50, ContactedCount: 45, EmailsSentCount: 120, ReplyCountUnique: 6, BouncedCount: 4,
+		OpenCountUnique: 30, LinkClickCountUnique: 5, TotalOpportunities: 2,
+	})
+	c.waitForImported("native-3", func(p sourcedCampaignPayload) bool { return p.SendsTotal == 120 })
+
+	var overview struct {
+		Local      metricsPayload `json:"local"`
+		Interested int64          `json:"interested"`
+		Instantly  struct {
+			Campaigns  int64          `json:"campaigns"`
+			Metrics    metricsPayload `json:"metrics"`
+			Interested int64          `json:"interested"`
+		} `json:"instantly"`
+	}
+	decodeInto(t, c.mustRequest(http.MethodGet, "/api/v1/campaign-analytics/overview", "", http.StatusOK), &overview)
+	if overview.Local.Sends != 0 || overview.Interested != 0 {
+		t.Fatalf("the import leaked into our own figures: local %+v, interested %d", overview.Local, overview.Interested)
+	}
+	got := overview.Instantly
+	if got.Campaigns != 1 || got.Interested != 2 || got.Metrics.Sends != 120 || got.Metrics.UniqueContacts != 45 ||
+		got.Metrics.Replied != 6 || got.Metrics.Bounced != 4 || got.Metrics.Opened != 30 || got.Metrics.Clicked != 5 {
+		t.Fatalf("the overview's Instantly figures = %+v", got)
+	}
+	if got.Metrics.PositiveReplies != 2 || got.Metrics.ReplyRate != 0.05 {
+		t.Fatalf("the overview's Instantly rates = %+v", got.Metrics)
+	}
+
+	inboxFirst(func(e inboxEmailPayload) bool { return e.CampaignName != nil && *e.CampaignName == "Austin plumbers" })
+}

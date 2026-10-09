@@ -63,11 +63,22 @@ type Overview struct {
 	Campaigns          map[string]int64
 	ContactsByStage    map[string]int64
 	Local              Metrics
+	Instantly          ImportedTotals
 	Interested         int64
 	NewsletterEligible int64
 	Subscribers        int64
 	ConversionRate     float64
 	Funnel             []FunnelStep
+}
+
+// ImportedTotals sums Instantly's own figures over the campaigns started in
+// Instantly's app. Those send nothing through us and have no leads or events here,
+// so without this the overview would read zero for them. It is kept beside Local,
+// not merged into it: the two count differently, and no campaign appears in both.
+type ImportedTotals struct {
+	Campaigns  int64
+	Metrics    Metrics
+	Interested int64
 }
 
 // FunnelStep is one bar of the cold → subscriber funnel.
@@ -190,6 +201,42 @@ func (s *Service) GetOverview(ctx context.Context) (Overview, error) {
 		return out, apperr.Internal(err)
 	}
 	out.Funnel, out.Interested, out.NewsletterEligible, out.Subscribers, out.ConversionRate = buildFunnel(out.ContactsByStage, reached)
+	if out.Instantly, err = s.importedTotals(ctx); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// importedTotals sums the latest Instantly snapshot of every imported campaign.
+// "Interested" is Instantly's opportunity count, as on the campaign list.
+func (s *Service) importedTotals(ctx context.Context) (ImportedTotals, error) {
+	var out ImportedTotals
+	m := &out.Metrics
+	err := s.store.Pool().QueryRow(ctx, `
+		SELECT count(*)::bigint,
+		       COALESCE(sum((snap.metrics->>'emails_sent_count')::bigint), 0)::bigint,
+		       COALESCE(sum((snap.metrics->>'contacted_count')::bigint), 0)::bigint,
+		       COALESCE(sum((snap.metrics->>'open_count_unique')::bigint), 0)::bigint,
+		       COALESCE(sum((snap.metrics->>'link_click_count_unique')::bigint), 0)::bigint,
+		       COALESCE(sum((snap.metrics->>'reply_count_unique')::bigint), 0)::bigint,
+		       COALESCE(sum((snap.metrics->>'bounced_count')::bigint), 0)::bigint,
+		       COALESCE(sum((snap.metrics->>'unsubscribed_count')::bigint), 0)::bigint,
+		       COALESCE(sum((snap.metrics->>'total_opportunities')::bigint), 0)::bigint
+		FROM campaigns c
+		LEFT JOIN LATERAL (
+		    SELECT metrics FROM campaign_analytics_snapshots
+		    WHERE campaign_id = c.id AND source = $1
+		    ORDER BY day DESC LIMIT 1
+		) snap ON TRUE
+		WHERE c.source = $2`, campaign.SnapshotInstantly, campaign.CampaignSourceInstantly,
+	).Scan(&out.Campaigns, &m.Sends, &m.UniqueContacts, &m.Opened, &m.Clicked, &m.Replied, &m.Bounced, &m.Unsubscribed, &out.Interested)
+	if err != nil {
+		return ImportedTotals{}, apperr.Internal(fmt.Errorf("analytics: imported totals: %w", err))
+	}
+	// Instantly classifies no replies as positive; its interest mark is the closest
+	// it has, and is what the positive-reply rate reads as on the overview.
+	m.PositiveReplies = out.Interested
+	m.finish()
 	return out, nil
 }
 

@@ -1,6 +1,7 @@
 package integration_test
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -120,7 +121,7 @@ func TestTheLaunchChecklistBlocksAnIncompleteCampaign(t *testing.T) {
 			t.Errorf("checklist item %s failed with no explanation", item.Key)
 		}
 	}
-	for _, key := range []string{"sending_accounts", "variants_weights_100", "leads_pending"} {
+	for _, key := range []string{"sending_accounts", "content", "leads_pending", "leads_verified"} {
 		if !failing[key] {
 			t.Errorf("the checklist did not flag %s", key)
 		}
@@ -135,17 +136,53 @@ func TestTheLaunchChecklistBlocksAnIncompleteCampaign(t *testing.T) {
 		fmt.Sprintf(`{"items":[{"variant_id":%q,"step":1,"weight":100}]}`, draft), http.StatusUnprocessableEntity)
 }
 
-func TestVariantWeightsMustTotalOneHundred(t *testing.T) {
+func TestVariantWeightsAreOptional(t *testing.T) {
 	c := newCampaignHarness(t, 2)
 	variants := c.campaignVariants(t, c.campaign.ID)
 
-	body := fmt.Sprintf(`{"items":[{"variant_id":%q,"step":1,"weight":70},{"variant_id":%q,"step":1,"weight":20}]}`,
-		variants[0], variants[1])
-	c.mustRequest(http.MethodPut, "/api/v1/campaigns/"+c.campaign.ID+"/variants", body, http.StatusUnprocessableEntity)
+	// Weights need not total 100, nor be set at all.
+	for _, weights := range [][2]int{{70, 20}, {0, 0}} {
+		body := fmt.Sprintf(`{"items":[{"variant_id":%q,"step":1,"weight":%d},{"variant_id":%q,"step":1,"weight":%d}]}`,
+			variants[0], weights[0], variants[1], weights[1])
+		c.mustRequest(http.MethodPut, "/api/v1/campaigns/"+c.campaign.ID+"/variants", body, http.StatusOK)
+	}
+	checklist := c.checklist(t, c.campaign.ID)
+	for _, item := range checklist.Items {
+		if item.Key == "content" && !item.OK {
+			t.Fatalf("unweighted approved variants failed the content check: %s", item.Message)
+		}
+	}
+}
 
-	body = fmt.Sprintf(`{"items":[{"variant_id":%q,"step":1,"weight":60},{"variant_id":%q,"step":1,"weight":40}]}`,
-		variants[0], variants[1])
-	c.mustRequest(http.MethodPut, "/api/v1/campaigns/"+c.campaign.ID+"/variants", body, http.StatusOK)
+func TestTheLaunchChecklistNeedsThirdPartyVerifiedLeads(t *testing.T) {
+	c := newCampaignHarness(t, 1)
+	itemOK := func() bool {
+		for _, item := range c.checklist(t, c.campaign.ID).Items {
+			if item.Key == "leads_verified" {
+				return item.OK
+			}
+		}
+		t.Fatal("the checklist has no leads_verified item")
+		return false
+	}
+	if !itemOK() {
+		t.Fatal("leads the third-party verifier called deliverable failed the check")
+	}
+	// Without a third-party result the leads do not count.
+	if _, err := c.app.Store().Pool().Exec(context.Background(), `
+		DELETE FROM email_verifications v USING campaign_leads cl, contacts c
+		WHERE cl.campaign_id = $1 AND c.id = cl.contact_id AND v.email = c.email`, c.campaign.ID); err != nil {
+		t.Fatalf("could not clear the verifications: %v", err)
+	}
+	if itemOK() {
+		t.Fatal("leads with no third-party verdict passed the check")
+	}
+	// Nor does a verdict other than deliverable.
+	c.setThirdPartyVerdict(c.campaign.ID, "undeliverable")
+	if itemOK() {
+		t.Fatal("leads the third-party verifier called undeliverable passed the check")
+	}
+	c.mustRequest(http.MethodPost, "/api/v1/campaigns/"+c.campaign.ID+"/launch", "", http.StatusConflict)
 }
 
 func TestASentVariantCannotBeDetachedOrRewritten(t *testing.T) {

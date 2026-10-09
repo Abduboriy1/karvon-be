@@ -31,15 +31,34 @@ WHERE id = sqlc.arg('id')
 RETURNING *;
 
 -- name: ClaimCampaignLaunch :one
--- A compare-and-set: only a ready campaign can start launching, and only once.
+-- A compare-and-set: only a ready or scheduled campaign can start launching, and
+-- only once.
 UPDATE campaigns
 SET status = 'launching', launch_claimed_at = now(), error = NULL, updated_at = now()
-WHERE id = $1 AND status = 'ready'
+WHERE id = $1 AND status IN ('ready', 'scheduled')
 RETURNING *;
 
 -- name: MarkCampaignReady :one
-UPDATE campaigns SET status = 'ready', updated_at = now()
-WHERE id = $1 AND status IN ('draft', 'ready', 'failed')
+-- A launch now. It also takes over a scheduled campaign, which is how "launch now
+-- instead" works; the new request id makes the scheduled job stale.
+UPDATE campaigns
+SET status = 'ready', scheduled_launch_at = NULL, launch_request_id = sqlc.arg('launch_request_id'),
+    error = NULL, updated_at = now()
+WHERE id = sqlc.arg('id') AND status IN ('draft', 'ready', 'failed', 'scheduled')
+RETURNING *;
+
+-- name: ScheduleCampaignLaunch :one
+-- A launch later, or a new time for one already scheduled.
+UPDATE campaigns
+SET status = 'scheduled', scheduled_launch_at = sqlc.arg('scheduled_launch_at'),
+    launch_request_id = sqlc.arg('launch_request_id'), error = NULL, updated_at = now()
+WHERE id = sqlc.arg('id') AND status IN ('draft', 'ready', 'failed', 'scheduled')
+RETURNING *;
+
+-- name: UnscheduleCampaign :one
+UPDATE campaigns
+SET status = 'draft', scheduled_launch_at = NULL, launch_request_id = NULL, updated_at = now()
+WHERE id = $1 AND status = 'scheduled'
 RETURNING *;
 
 -- name: SetCampaignInstantlyID :one
@@ -69,7 +88,7 @@ RETURNING *;
 -- name: MarkCampaignFailed :one
 UPDATE campaigns
 SET status = 'failed', error = sqlc.narg('error'), updated_at = now()
-WHERE id = sqlc.arg('id') AND status IN ('ready', 'launching')
+WHERE id = sqlc.arg('id') AND status IN ('ready', 'scheduled', 'launching')
 RETURNING *;
 
 -- name: ArchiveCampaign :one
@@ -108,6 +127,17 @@ RETURNING c.*;
 
 -- name: ListCampaignsByStatus :many
 SELECT * FROM campaigns WHERE status = ANY(sqlc.arg('statuses')::text[]) ORDER BY created_at;
+
+-- name: ListFinishedImportedCampaignsToSync :many
+-- Campaigns started in Instantly that have stopped sending but still need a sync:
+-- one that has never had its per-day figures fetched, or one completed recently
+-- enough that replies and opportunities may still be coming in.
+SELECT * FROM campaigns c
+WHERE c.source = 'instantly' AND c.instantly_campaign_id IS NOT NULL
+  AND c.status NOT IN ('active', 'paused', 'launching', 'archived')
+  AND (NOT EXISTS (SELECT 1 FROM campaign_stats_daily d WHERE d.campaign_id = c.id)
+       OR c.completed_at >= now() - make_interval(days => sqlc.arg('settle_days')::int))
+ORDER BY c.created_at;
 
 -- name: CountCampaignsByStatus :many
 SELECT status, count(*)::bigint AS total FROM campaigns GROUP BY status;

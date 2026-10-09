@@ -139,9 +139,9 @@ func (w *SyncCampaignWorker) sync(ctx context.Context, client instantly.Client, 
 	}
 
 	// A campaign started in Instantly has no leads here to mirror onto: its
-	// numbers are the analytics snapshot above.
+	// numbers are the analytics snapshot above, and its days below.
 	if camp.Source == campaign.CampaignSourceInstantly {
-		return nil
+		return w.syncDaily(ctx, client, camp, id, run)
 	}
 
 	// Lead mirror: status, interest, counters, and events the webhook missed.
@@ -296,6 +296,63 @@ func (w *SyncCampaignWorker) mirrorLead(ctx context.Context, camp dbgen.Campaign
 	return changed, err
 }
 
+// dailyBackfillDays caps the first daily fetch of an imported campaign at the
+// longest window the dashboard reports on.
+const dailyBackfillDays = 731
+
+// importedSettleDays is how long a completed imported campaign keeps syncing.
+const importedSettleDays = 30
+
+// syncDaily mirrors Instantly's per-day figures for a campaign started in
+// Instantly's app, which is what lets the dashboard window them: its snapshots are
+// lifetime totals. The first fetch reaches back to the campaign's creation; later
+// ones re-read the sync window before the last day held, so figures Instantly
+// settles late are overwritten.
+func (w *SyncCampaignWorker) syncDaily(ctx context.Context, client instantly.Client, camp dbgen.Campaign, id string, run *syncRun) error {
+	d := w.deps
+	to := d.Now().UTC()
+	from := camp.CreatedAt.UTC()
+	if last, err := d.Store.LastCampaignStatsDay(ctx, camp.ID); err != nil {
+		return fmt.Errorf("last daily stats: %w", err)
+	} else if last.Valid {
+		from = last.Time.AddDate(0, 0, -d.Config.SyncWindowDays)
+	}
+	if floor := to.AddDate(0, 0, -dailyBackfillDays); from.Before(floor) {
+		from = floor
+	}
+	// Never less than the sync window, even for a campaign created moments ago.
+	if ceil := to.AddDate(0, 0, -d.Config.SyncWindowDays); from.After(ceil) {
+		from = ceil
+	}
+
+	if err := d.Limiter.Wait(ctx); err != nil {
+		return err
+	}
+	rows, err := client.CampaignDailyAnalytics(ctx, id, from, to)
+	if err != nil {
+		return fmt.Errorf("daily analytics: %w", err)
+	}
+	for _, r := range rows {
+		day, err := time.Parse("2006-01-02", r.Date)
+		if err != nil {
+			continue
+		}
+		if err := d.Store.UpsertCampaignStatsDaily(ctx, dbgen.UpsertCampaignStatsDailyParams{
+			CampaignID: camp.ID, Day: pgtype.Date{Time: day, Valid: true},
+			Sent: campaign.Int32(r.Sent), Contacted: campaign.Int32(r.Contacted), NewLeadsContacted: campaign.Int32(r.NewLeadsContacted),
+			Opened: campaign.Int32(r.Opened), UniqueOpened: campaign.Int32(r.UniqueOpened),
+			Replies: campaign.Int32(r.Replies), UniqueReplies: campaign.Int32(r.UniqueReplies),
+			Clicks: campaign.Int32(r.Clicks), UniqueClicks: campaign.Int32(r.UniqueClicks),
+			Opportunities: campaign.Int32(r.Opportunities),
+		}); err != nil {
+			return fmt.Errorf("store daily stats: %w", err)
+		}
+		run.updated++
+	}
+	run.details["daily_rows"] = len(rows)
+	return nil
+}
+
 // backfillSends walks the sent emails Instantly holds and upserts any send row we
 // do not have, marked as reconciled.
 func (w *SyncCampaignWorker) backfillSends(ctx context.Context, client instantly.Client, camp dbgen.Campaign, run *syncRun) error {
@@ -416,6 +473,14 @@ func (w *SyncAllWorker) Work(ctx context.Context, _ *river.Job[campaign.SyncAllA
 	if err != nil {
 		return fmt.Errorf("campaign jobs: list campaigns: %w", err)
 	}
+	// A campaign started in Instantly is read only through its sync, so a finished
+	// one still needs it: once for its per-day history, and for a while after it
+	// completes, as replies and opportunities keep arriving.
+	finished, err := d.Store.ListFinishedImportedCampaignsToSync(ctx, importedSettleDays)
+	if err != nil {
+		return fmt.Errorf("campaign jobs: list finished imported campaigns: %w", err)
+	}
+	rows = append(rows, finished...)
 	for _, c := range rows {
 		if c.InstantlyCampaignID == nil {
 			continue

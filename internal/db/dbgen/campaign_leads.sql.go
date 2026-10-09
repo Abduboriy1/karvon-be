@@ -25,7 +25,7 @@ WHERE cl.id IN (
     LIMIT $2
     FOR UPDATE OF l SKIP LOCKED)
   AND c.id = cl.contact_id
-RETURNING cl.id, cl.campaign_id, cl.contact_id, cl.business_id, cl.status, cl.instantly_lead_id, cl.instantly_status, cl.interest_status, cl.interest_label, cl.claimed_at, cl.pushed_at, cl.push_attempts, cl.last_push_error, cl.custom_vars, cl.last_contacted_at, cl.last_opened_at, cl.last_clicked_at, cl.last_replied_at, cl.open_count, cl.click_count, cl.reply_count, cl.created_at, cl.updated_at
+RETURNING cl.id, cl.campaign_id, cl.contact_id, cl.business_id, cl.status, cl.instantly_lead_id, cl.instantly_status, cl.interest_status, cl.interest_label, cl.claimed_at, cl.pushed_at, cl.push_attempts, cl.last_push_error, cl.custom_vars, cl.last_contacted_at, cl.last_opened_at, cl.last_clicked_at, cl.last_replied_at, cl.open_count, cl.click_count, cl.reply_count, cl.created_at, cl.updated_at, cl.provider_removed_at, cl.provider_removed_reason, cl.cleanup_run_id
 `
 
 type ClaimPendingCampaignLeadsParams struct {
@@ -69,6 +69,9 @@ func (q *Queries) ClaimPendingCampaignLeads(ctx context.Context, arg ClaimPendin
 			&i.ReplyCount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ProviderRemovedAt,
+			&i.ProviderRemovedReason,
+			&i.CleanupRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -123,6 +126,23 @@ func (q *Queries) CountPendingCampaignLeads(ctx context.Context, campaignID uuid
 	return count, err
 }
 
+const countThirdPartyVerifiedPendingCampaignLeads = `-- name: CountThirdPartyVerifiedPendingCampaignLeads :one
+SELECT count(*) FROM campaign_leads cl
+JOIN contacts c ON c.id = cl.contact_id
+JOIN email_verifications v ON v.email = c.email
+WHERE cl.campaign_id = $1 AND cl.status = 'pending' AND c.suppressed_at IS NULL
+  AND v.pass2_status = 'deliverable'
+  AND NOT EXISTS (SELECT 1 FROM global_excluded_addresses x WHERE x.email = c.email)
+`
+
+// Pending leads whose address the paid third-party verifier called deliverable.
+func (q *Queries) CountThirdPartyVerifiedPendingCampaignLeads(ctx context.Context, campaignID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countThirdPartyVerifiedPendingCampaignLeads, campaignID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteCampaignLead = `-- name: DeleteCampaignLead :execrows
 DELETE FROM campaign_leads WHERE id = $1 AND status IN ('pending', 'failed', 'skipped')
 `
@@ -136,7 +156,7 @@ func (q *Queries) DeleteCampaignLead(ctx context.Context, id uuid.UUID) (int64, 
 }
 
 const getCampaignLead = `-- name: GetCampaignLead :one
-SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at FROM campaign_leads WHERE id = $1
+SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id FROM campaign_leads WHERE id = $1
 `
 
 func (q *Queries) GetCampaignLead(ctx context.Context, id uuid.UUID) (CampaignLead, error) {
@@ -166,12 +186,15 @@ func (q *Queries) GetCampaignLead(ctx context.Context, id uuid.UUID) (CampaignLe
 		&i.ReplyCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProviderRemovedAt,
+		&i.ProviderRemovedReason,
+		&i.CleanupRunID,
 	)
 	return i, err
 }
 
 const getCampaignLeadByContact = `-- name: GetCampaignLeadByContact :one
-SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at FROM campaign_leads WHERE campaign_id = $1 AND contact_id = $2
+SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id FROM campaign_leads WHERE campaign_id = $1 AND contact_id = $2
 `
 
 type GetCampaignLeadByContactParams struct {
@@ -206,12 +229,15 @@ func (q *Queries) GetCampaignLeadByContact(ctx context.Context, arg GetCampaignL
 		&i.ReplyCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProviderRemovedAt,
+		&i.ProviderRemovedReason,
+		&i.CleanupRunID,
 	)
 	return i, err
 }
 
 const getCampaignLeadByInstantlyID = `-- name: GetCampaignLeadByInstantlyID :one
-SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at FROM campaign_leads WHERE campaign_id = $1 AND instantly_lead_id = $2
+SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id FROM campaign_leads WHERE campaign_id = $1 AND instantly_lead_id = $2
 `
 
 type GetCampaignLeadByInstantlyIDParams struct {
@@ -246,6 +272,9 @@ func (q *Queries) GetCampaignLeadByInstantlyID(ctx context.Context, arg GetCampa
 		&i.ReplyCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProviderRemovedAt,
+		&i.ProviderRemovedReason,
+		&i.CleanupRunID,
 	)
 	return i, err
 }
@@ -254,7 +283,7 @@ const insertCampaignLead = `-- name: InsertCampaignLead :one
 INSERT INTO campaign_leads (id, campaign_id, contact_id, business_id)
 VALUES ($1, $2, $3, $4)
 ON CONFLICT (campaign_id, contact_id) DO NOTHING
-RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at
+RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id
 `
 
 type InsertCampaignLeadParams struct {
@@ -296,6 +325,9 @@ func (q *Queries) InsertCampaignLead(ctx context.Context, arg InsertCampaignLead
 		&i.ReplyCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProviderRemovedAt,
+		&i.ProviderRemovedReason,
+		&i.CleanupRunID,
 	)
 	return i, err
 }
@@ -325,7 +357,7 @@ func (q *Queries) ListCampaignLeadContactIDs(ctx context.Context, campaignID uui
 }
 
 const listCampaignLeadsForContact = `-- name: ListCampaignLeadsForContact :many
-SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at FROM campaign_leads WHERE contact_id = $1 ORDER BY created_at
+SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id FROM campaign_leads WHERE contact_id = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListCampaignLeadsForContact(ctx context.Context, contactID uuid.UUID) ([]CampaignLead, error) {
@@ -361,6 +393,9 @@ func (q *Queries) ListCampaignLeadsForContact(ctx context.Context, contactID uui
 			&i.ReplyCount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ProviderRemovedAt,
+			&i.ProviderRemovedReason,
+			&i.CleanupRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -373,7 +408,7 @@ func (q *Queries) ListCampaignLeadsForContact(ctx context.Context, contactID uui
 }
 
 const listPushedCampaignLeads = `-- name: ListPushedCampaignLeads :many
-SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at FROM campaign_leads WHERE campaign_id = $1 AND instantly_lead_id IS NOT NULL ORDER BY created_at
+SELECT id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id FROM campaign_leads WHERE campaign_id = $1 AND instantly_lead_id IS NOT NULL ORDER BY created_at
 `
 
 func (q *Queries) ListPushedCampaignLeads(ctx context.Context, campaignID uuid.UUID) ([]CampaignLead, error) {
@@ -409,6 +444,9 @@ func (q *Queries) ListPushedCampaignLeads(ctx context.Context, campaignID uuid.U
 			&i.ReplyCount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ProviderRemovedAt,
+			&i.ProviderRemovedReason,
+			&i.CleanupRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -421,10 +459,11 @@ func (q *Queries) ListPushedCampaignLeads(ctx context.Context, campaignID uuid.U
 }
 
 const listPushedCampaignLeadsForContact = `-- name: ListPushedCampaignLeadsForContact :many
-SELECT cl.id, cl.campaign_id, cl.contact_id, cl.business_id, cl.status, cl.instantly_lead_id, cl.instantly_status, cl.interest_status, cl.interest_label, cl.claimed_at, cl.pushed_at, cl.push_attempts, cl.last_push_error, cl.custom_vars, cl.last_contacted_at, cl.last_opened_at, cl.last_clicked_at, cl.last_replied_at, cl.open_count, cl.click_count, cl.reply_count, cl.created_at, cl.updated_at FROM campaign_leads cl
+SELECT cl.id, cl.campaign_id, cl.contact_id, cl.business_id, cl.status, cl.instantly_lead_id, cl.instantly_status, cl.interest_status, cl.interest_label, cl.claimed_at, cl.pushed_at, cl.push_attempts, cl.last_push_error, cl.custom_vars, cl.last_contacted_at, cl.last_opened_at, cl.last_clicked_at, cl.last_replied_at, cl.open_count, cl.click_count, cl.reply_count, cl.created_at, cl.updated_at, cl.provider_removed_at, cl.provider_removed_reason, cl.cleanup_run_id FROM campaign_leads cl
 JOIN campaigns c ON c.id = cl.campaign_id
 WHERE cl.contact_id = $1
   AND cl.instantly_lead_id IS NOT NULL
+  AND cl.provider_removed_at IS NULL
   AND c.status <> 'archived'
 `
 
@@ -464,6 +503,9 @@ func (q *Queries) ListPushedCampaignLeadsForContact(ctx context.Context, contact
 			&i.ReplyCount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ProviderRemovedAt,
+			&i.ProviderRemovedReason,
+			&i.CleanupRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -481,7 +523,7 @@ SET status = CASE WHEN status = 'excluded' THEN 'excluded' ELSE 'active' END, in
     pushed_at = COALESCE(pushed_at, now()), claimed_at = NULL, last_push_error = NULL,
     custom_vars = $2, updated_at = now()
 WHERE id = $3
-RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at
+RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id
 `
 
 type MarkCampaignLeadPushedParams struct {
@@ -519,6 +561,70 @@ func (q *Queries) MarkCampaignLeadPushed(ctx context.Context, arg MarkCampaignLe
 		&i.ReplyCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProviderRemovedAt,
+		&i.ProviderRemovedReason,
+		&i.CleanupRunID,
+	)
+	return i, err
+}
+
+const markCampaignLeadRemovedFromProvider = `-- name: MarkCampaignLeadRemovedFromProvider :one
+UPDATE campaign_leads
+SET provider_removed_at     = $1,
+    provider_removed_reason = $2,
+    cleanup_run_id          = COALESCE($3, cleanup_run_id),
+    status                  = CASE WHEN status IN ('active', 'paused') THEN 'completed' ELSE status END,
+    claimed_at              = NULL,
+    updated_at              = now()
+WHERE id = $4 AND provider_removed_at IS NULL
+RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id
+`
+
+type MarkCampaignLeadRemovedFromProviderParams struct {
+	RemovedAt    *time.Time
+	Reason       *string
+	CleanupRunID uuid.NullUUID
+	ID           uuid.UUID
+}
+
+// The lead no longer occupies an Instantly slot. The row, its sends and its
+// timeline stay. A lead still mid-sequence is closed as completed, since the
+// mirror can no longer see it move on; a cleanup run records itself on the lead.
+func (q *Queries) MarkCampaignLeadRemovedFromProvider(ctx context.Context, arg MarkCampaignLeadRemovedFromProviderParams) (CampaignLead, error) {
+	row := q.db.QueryRow(ctx, markCampaignLeadRemovedFromProvider,
+		arg.RemovedAt,
+		arg.Reason,
+		arg.CleanupRunID,
+		arg.ID,
+	)
+	var i CampaignLead
+	err := row.Scan(
+		&i.ID,
+		&i.CampaignID,
+		&i.ContactID,
+		&i.BusinessID,
+		&i.Status,
+		&i.InstantlyLeadID,
+		&i.InstantlyStatus,
+		&i.InterestStatus,
+		&i.InterestLabel,
+		&i.ClaimedAt,
+		&i.PushedAt,
+		&i.PushAttempts,
+		&i.LastPushError,
+		&i.CustomVars,
+		&i.LastContactedAt,
+		&i.LastOpenedAt,
+		&i.LastClickedAt,
+		&i.LastRepliedAt,
+		&i.OpenCount,
+		&i.ClickCount,
+		&i.ReplyCount,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ProviderRemovedAt,
+		&i.ProviderRemovedReason,
+		&i.CleanupRunID,
 	)
 	return i, err
 }
@@ -527,7 +633,7 @@ const markCampaignLeadStatus = `-- name: MarkCampaignLeadStatus :one
 UPDATE campaign_leads
 SET status = $1, last_push_error = $2, claimed_at = NULL, updated_at = now()
 WHERE id = $3
-RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at
+RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id
 `
 
 type MarkCampaignLeadStatusParams struct {
@@ -563,6 +669,9 @@ func (q *Queries) MarkCampaignLeadStatus(ctx context.Context, arg MarkCampaignLe
 		&i.ReplyCount,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ProviderRemovedAt,
+		&i.ProviderRemovedReason,
+		&i.CleanupRunID,
 	)
 	return i, err
 }
@@ -676,6 +785,24 @@ func (q *Queries) ReleaseCampaignLeadClaims(ctx context.Context, arg ReleaseCamp
 	return result.RowsAffected(), nil
 }
 
+const requeueUnpushedCampaignLeads = `-- name: RequeueUnpushedCampaignLeads :execrows
+UPDATE campaign_leads
+SET status = 'pending', claimed_at = NULL, updated_at = now()
+WHERE campaign_id = $1 AND instantly_lead_id IS NULL
+  AND (status = 'failed' OR (status = 'pushing' AND claimed_at < now() - interval '10 minutes'))
+`
+
+// A new launch request gives the leads an earlier one could not push another try:
+// the ones it gave up on and the ones a killed job left claimed (longer ago than
+// any push job runs). Only leads Instantly never acknowledged.
+func (q *Queries) RequeueUnpushedCampaignLeads(ctx context.Context, campaignID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, requeueUnpushedCampaignLeads, campaignID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setCampaignLeadInterest = `-- name: SetCampaignLeadInterest :exec
 UPDATE campaign_leads
 SET interest_status = $1, interest_label = $2, updated_at = now()
@@ -750,7 +877,7 @@ const suppressCampaignLeadsForContact = `-- name: SuppressCampaignLeadsForContac
 UPDATE campaign_leads
 SET status = 'suppressed', claimed_at = NULL, updated_at = now()
 WHERE contact_id = $1 AND status IN ('pending', 'pushing', 'active', 'paused', 'completed', 'replied')
-RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at
+RETURNING id, campaign_id, contact_id, business_id, status, instantly_lead_id, instantly_status, interest_status, interest_label, claimed_at, pushed_at, push_attempts, last_push_error, custom_vars, last_contacted_at, last_opened_at, last_clicked_at, last_replied_at, open_count, click_count, reply_count, created_at, updated_at, provider_removed_at, provider_removed_reason, cleanup_run_id
 `
 
 // Every non-terminal lead of a suppressed contact stops where it is.
@@ -787,6 +914,9 @@ func (q *Queries) SuppressCampaignLeadsForContact(ctx context.Context, contactID
 			&i.ReplyCount,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ProviderRemovedAt,
+			&i.ProviderRemovedReason,
+			&i.CleanupRunID,
 		); err != nil {
 			return nil, err
 		}
@@ -796,4 +926,21 @@ func (q *Queries) SuppressCampaignLeadsForContact(ctx context.Context, contactID
 		return nil, err
 	}
 	return items, nil
+}
+
+const tagCampaignLeadCleanupRun = `-- name: TagCampaignLeadCleanupRun :exec
+UPDATE campaign_leads SET cleanup_run_id = $1, updated_at = now()
+WHERE id = $2 AND provider_removed_at IS NULL
+`
+
+type TagCampaignLeadCleanupRunParams struct {
+	CleanupRunID uuid.NullUUID
+	ID           uuid.UUID
+}
+
+// A lead a cleanup run tried and could not delete: tagging it keeps the same run
+// from picking it again.
+func (q *Queries) TagCampaignLeadCleanupRun(ctx context.Context, arg TagCampaignLeadCleanupRunParams) error {
+	_, err := q.db.Exec(ctx, tagCampaignLeadCleanupRun, arg.CleanupRunID, arg.ID)
+	return err
 }

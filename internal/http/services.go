@@ -160,7 +160,8 @@ type CampaignService interface {
 	UpdateCampaign(ctx context.Context, id uuid.UUID, in campaignsvc.CampaignInput) (db.CampaignRow, error)
 	ArchiveCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
 	GetChecklist(ctx context.Context, id uuid.UUID) (campaignsvc.Checklist, error)
-	LaunchCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
+	LaunchCampaign(ctx context.Context, id uuid.UUID, scheduledAt *time.Time) (db.CampaignRow, error)
+	UnscheduleCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
 	PauseCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
 	ResumeCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error)
 	SyncCampaign(ctx context.Context, id uuid.UUID) error
@@ -227,6 +228,14 @@ type CampaignService interface {
 	ListProviderEvents(ctx context.Context, f campaignsvc.ProviderEventFilter, page, perPage int) (campaignsvc.Page[dbgen.ProviderEvent], error)
 	ReprocessProviderEvent(ctx context.Context, id uuid.UUID) (dbgen.ProviderEvent, error)
 	ListSyncRuns(ctx context.Context, kind *string, page, perPage int) (campaignsvc.Page[dbgen.SyncRun], error)
+
+	// Instantly cleanup.
+	GetCleanupOverview(ctx context.Context) (campaignsvc.CleanupOverview, error)
+	UpdateCleanupSettings(ctx context.Context, in campaignsvc.CleanupSettings) (campaignsvc.CleanupSettings, error)
+	PreviewCleanup(ctx context.Context, in campaignsvc.CleanupRequest) (campaignsvc.CleanupPreview, error)
+	StartCleanup(ctx context.Context, in campaignsvc.CleanupRequest, trigger string) (dbgen.InstantlyCleanupRun, error)
+	ListCleanupRuns(ctx context.Context, page, perPage int) (campaignsvc.Page[dbgen.InstantlyCleanupRun], error)
+	GetCleanupRun(ctx context.Context, id uuid.UUID) (dbgen.InstantlyCleanupRun, error)
 
 	// Newsletter.
 	ListAudiences(ctx context.Context) ([]dbgen.NewsletterAudience, error)

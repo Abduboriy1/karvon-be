@@ -45,3 +45,20 @@ WHERE thread_id = $1 AND is_unread;
 
 -- name: CountInboxUnread :one
 SELECT count(*)::bigint FROM inbox_emails WHERE direction = 'received' AND is_unread;
+
+-- name: LinkInboxEmails :execrows
+-- An email is linked to our campaign and contact when it is mirrored, but only to
+-- the ones that exist at that moment: an email mirrored before its Instantly
+-- campaign was imported, or before its lead became a contact, is stored unlinked,
+-- and the incremental sync only walks forward, so it is never revisited. This
+-- fills in the links that have become known since.
+UPDATE inbox_emails ie
+SET campaign_id = COALESCE(ie.campaign_id,
+        (SELECT c.id FROM campaigns c WHERE c.instantly_campaign_id = ie.instantly_campaign_id)),
+    contact_id  = COALESCE(ie.contact_id,
+        (SELECT ct.id FROM contacts ct WHERE ct.email = ie.lead_email)),
+    updated_at  = now()
+WHERE (ie.campaign_id IS NULL AND ie.instantly_campaign_id IS NOT NULL
+       AND EXISTS (SELECT 1 FROM campaigns c WHERE c.instantly_campaign_id = ie.instantly_campaign_id))
+   OR (ie.contact_id IS NULL AND ie.lead_email IS NOT NULL
+       AND EXISTS (SELECT 1 FROM contacts ct WHERE ct.email = ie.lead_email));

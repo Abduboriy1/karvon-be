@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -32,6 +33,16 @@ type PushLeadsWorker struct {
 
 // NewPushLeadsWorker builds the worker.
 func NewPushLeadsWorker(deps *Deps) *PushLeadsWorker { return &PushLeadsWorker{deps: deps} }
+
+// pushTimeout covers one bulk add at the client's bulk timeout plus the per-lead
+// lookups that follow it. River's one-minute default cut batches off while
+// Instantly was still taking them in.
+const pushTimeout = 6 * time.Minute
+
+// Timeout implements river.Worker.
+func (w *PushLeadsWorker) Timeout(*river.Job[campaign.PushLeadsArgs]) time.Duration {
+	return pushTimeout
+}
 
 // Work implements river.Worker.
 func (w *PushLeadsWorker) Work(ctx context.Context, rj *river.Job[campaign.PushLeadsArgs]) error {
@@ -93,7 +104,7 @@ func (w *PushLeadsWorker) Work(ctx context.Context, rj *river.Job[campaign.PushL
 		})
 		if errors.Is(err, service.ErrNoVariants) {
 			w.release(ctx, id, claimedIDs, "no active variant")
-			return w.fatalCampaign(ctx, camp, "a step has no active variant with weight")
+			return w.fatalCampaign(ctx, camp, "a step has no active variant")
 		}
 		if err != nil {
 			w.release(ctx, id, claimedIDs, err.Error())
@@ -155,13 +166,13 @@ func (w *PushLeadsWorker) Work(ctx context.Context, rj *river.Job[campaign.PushL
 	if d.Config.LeadBatchGap > 0 && len(leads) == d.Config.LeadBatch {
 		// Instantly asks for a pause between bulk calls; the next batch is its own
 		// job so the pause never blocks a worker.
-		if _, err := d.Queue.Insert(ctx, campaign.PushLeadsArgs{CampaignID: id, Batch: rj.Args.Batch + 1},
+		if _, err := d.Queue.Insert(ctx, campaign.PushLeadsArgs{CampaignID: id, Batch: rj.Args.Batch + 1, Round: rj.Args.Round},
 			&river.InsertOpts{ScheduledAt: d.Now().Add(d.Config.LeadBatchGap)}); err != nil {
 			return fmt.Errorf("campaign jobs: enqueue next batch: %w", err)
 		}
 		return nil
 	}
-	return d.enqueue(ctx, campaign.PushLeadsArgs{CampaignID: id, Batch: rj.Args.Batch + 1})
+	return d.enqueue(ctx, campaign.PushLeadsArgs{CampaignID: id, Batch: rj.Args.Batch + 1, Round: rj.Args.Round})
 }
 
 // afterBatch runs when nothing is left to push: activate once, then stop.
@@ -367,7 +378,7 @@ func (w *RemoveLeadWorker) Work(ctx context.Context, rj *river.Job[campaign.Remo
 	if err != nil {
 		return fmt.Errorf("campaign jobs: load lead: %w", err)
 	}
-	if lead.InstantlyLeadID == nil || *lead.InstantlyLeadID == "" {
+	if lead.InstantlyLeadID == nil || *lead.InstantlyLeadID == "" || lead.ProviderRemovedAt != nil {
 		return nil
 	}
 	client, err := d.Service.Instantly(ctx)
@@ -384,10 +395,7 @@ func (w *RemoveLeadWorker) Work(ctx context.Context, rj *river.Job[campaign.Remo
 	err = client.DeleteLead(ctx, *lead.InstantlyLeadID)
 	switch {
 	case err == nil, errors.Is(err, provider.ErrNotFound):
-		return d.Store.SetCampaignLeadProviderState(ctx, dbgen.SetCampaignLeadProviderStateParams{
-			ID: lead.ID, Status: lead.Status, InstantlyStatus: lead.InstantlyStatus, InterestStatus: lead.InterestStatus,
-			InterestLabel: lead.InterestLabel, OpenCount: lead.OpenCount, ClickCount: lead.ClickCount, ReplyCount: lead.ReplyCount,
-		})
+		return MarkRemovedFromProvider(ctx, d, lead, removalReason(lead.Status), uuid.NullUUID{})
 	case errors.Is(err, provider.ErrRateLimited):
 		return snoozeFor(err)
 	case fatal(err):
@@ -395,4 +403,43 @@ func (w *RemoveLeadWorker) Work(ctx context.Context, rj *river.Job[campaign.Remo
 		return nil
 	}
 	return fmt.Errorf("campaign jobs: delete lead: %w", err)
+}
+
+// removalReason says why RemoveLeadWorker took a lead out of Instantly, from the
+// state the lead was stopped in.
+func removalReason(status string) string {
+	switch status {
+	case campaign.LeadExcluded:
+		return campaign.ProviderRemovedExcluded
+	case campaign.LeadSuppressed, campaign.LeadBounced, campaign.LeadUnsubscribed:
+		return campaign.ProviderRemovedSuppressed
+	default:
+		return campaign.ProviderRemovedManual
+	}
+}
+
+// MarkRemovedFromProvider stamps a lead as gone from Instantly and puts that on
+// the contact's timeline. The contact's stage is left alone: it was emailed, and
+// leaving Instantly changes nothing about that. A lead already stamped is a no-op.
+func MarkRemovedFromProvider(ctx context.Context, d *Deps, lead dbgen.CampaignLead, reason string, runID uuid.NullUUID) error {
+	return d.Store.InTx(ctx, func(q *dbgen.Queries) error {
+		removed, err := q.MarkCampaignLeadRemovedFromProvider(ctx, dbgen.MarkCampaignLeadRemovedFromProviderParams{
+			ID: lead.ID, RemovedAt: campaign.Ptr(d.Now()), Reason: &reason, CleanupRunID: runID,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("mark removed from provider: %w", err)
+		}
+		data := map[string]any{"reason": reason, "instantly_lead_id": campaign.Deref(lead.InstantlyLeadID)}
+		if runID.Valid {
+			data["cleanup_run_id"] = runID.UUID
+		}
+		_, _, err = campaign.RecordEvent(ctx, q, campaign.EventInput{
+			ContactID: removed.ContactID, CampaignID: &removed.CampaignID, CampaignLeadID: &removed.ID,
+			Type: campaign.EventRemovedFromProvider, OccurredAt: d.Now(), Source: campaign.EventSourceSystem, Data: data,
+		})
+		return err
+	})
 }

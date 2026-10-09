@@ -23,8 +23,11 @@ const (
 
 // Campaign statuses.
 const (
-	CampaignDraft     = "draft"
-	CampaignReady     = "ready"
+	CampaignDraft = "draft"
+	CampaignReady = "ready"
+	// CampaignScheduled is a campaign waiting for its scheduled_launch_at; the
+	// launch job runs then and moves it on to launching.
+	CampaignScheduled = "scheduled"
 	CampaignLaunching = "launching"
 	CampaignActive    = "active"
 	CampaignPaused    = "paused"
@@ -46,7 +49,7 @@ const (
 var CampaignSources = []string{CampaignSourceKarvon, CampaignSourceInstantly}
 
 // CampaignStatuses lists every campaign status the schema accepts.
-var CampaignStatuses = []string{CampaignDraft, CampaignReady, CampaignLaunching, CampaignActive,
+var CampaignStatuses = []string{CampaignDraft, CampaignReady, CampaignScheduled, CampaignLaunching, CampaignActive,
 	CampaignPaused, CampaignCompleted, CampaignFailed, CampaignArchived}
 
 // Campaign lead statuses: the delivery state of one contact inside one campaign.
@@ -69,6 +72,44 @@ const (
 // LeadStatuses lists every campaign lead status the schema accepts.
 var LeadStatuses = []string{LeadPending, LeadPushing, LeadActive, LeadPaused, LeadCompleted, LeadReplied,
 	LeadBounced, LeadUnsubscribed, LeadSkipped, LeadSuppressed, LeadFailed, LeadExcluded}
+
+// Why a pushed lead was deleted from Instantly. Karvon keeps the lead row either
+// way; provider_removed_at says it no longer occupies an Instantly contact slot.
+const (
+	// ProviderRemovedCleanup is a lead an Instantly cleanup run deleted because
+	// Instantly had finished with it.
+	ProviderRemovedCleanup = "cleanup"
+	// ProviderRemovedSuppressed follows a suppression (bounce, unsubscribe, manual).
+	ProviderRemovedSuppressed = "suppressed"
+	// ProviderRemovedExcluded follows a global exclusion.
+	ProviderRemovedExcluded = "excluded"
+	// ProviderRemovedManual is an operator removing the lead from its campaign.
+	ProviderRemovedManual = "manual"
+)
+
+// Instantly cleanup scopes: which pushed leads a cleanup may delete.
+const (
+	// CleanupScopeFinished takes only leads Instantly will not email again: the
+	// sequence completed, or the lead bounced, unsubscribed or was stopped here.
+	CleanupScopeFinished = "finished"
+	// CleanupScopeEmailed takes every lead emailed at least once, which also
+	// cancels the follow-up steps it has not received yet.
+	CleanupScopeEmailed = "emailed"
+)
+
+// CleanupScopes lists every cleanup scope the schema accepts.
+var CleanupScopes = []string{CleanupScopeFinished, CleanupScopeEmailed}
+
+// Instantly cleanup run triggers and statuses.
+const (
+	CleanupTriggerManual = "manual"
+	CleanupTriggerAuto   = "auto"
+
+	CleanupQueued  = "queued"
+	CleanupRunning = "running"
+	CleanupDone    = "done"
+	CleanupFailed  = "failed"
+)
 
 // Contact sources.
 const (

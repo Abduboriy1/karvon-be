@@ -32,6 +32,9 @@ const (
 	EventNewsletterProfileUpdated = "newsletter_profile_updated"
 	EventStageChanged             = "stage_changed"
 	EventNote                     = "note"
+	// EventRemovedFromProvider is a lead deleted from its Instantly campaign. The
+	// contact was still emailed; only the Instantly copy of the lead is gone.
+	EventRemovedFromProvider = "removed_from_provider"
 )
 
 // EventTypes lists every contact event type the schema accepts.
@@ -40,7 +43,7 @@ var EventTypes = []string{EventImported, EventQueued, EventPushed, EventPushFail
 	EventMeetingBooked, EventBounced, EventUnsubscribed, EventSkipped, EventSuppressed, EventSuppressionLifted,
 	EventPermissionRequested, EventConsentCaptured, EventConsentRevoked, EventNewsletterEligible,
 	EventNewsletterPushed, EventNewsletterPending, EventNewsletterSubscribed, EventNewsletterUnsubscribed,
-	EventNewsletterCleaned, EventNewsletterProfileUpdated, EventStageChanged, EventNote}
+	EventNewsletterCleaned, EventNewsletterProfileUpdated, EventStageChanged, EventNote, EventRemovedFromProvider}
 
 // Event sources.
 const (

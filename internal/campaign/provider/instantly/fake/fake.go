@@ -207,6 +207,41 @@ func (c *Client) PutCampaign(campaign instantly.Campaign, analytics instantly.Ca
 	c.Analytics[campaign.ID] = analytics
 }
 
+// PutLeads stores leads as if they had been added in Instantly's own app.
+func (c *Client) PutLeads(leads ...instantly.Lead) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Leads == nil {
+		c.Leads = map[string]instantly.Lead{}
+	}
+	for _, l := range leads {
+		c.Leads[l.ID] = l
+	}
+}
+
+// LeadsIn counts the leads a campaign holds.
+func (c *Client) LeadsIn(campaignID string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := 0
+	for _, l := range c.Leads {
+		if l.Campaign == campaignID {
+			n++
+		}
+	}
+	return n
+}
+
+// PutDaily sets the per-day analytics a campaign reports, replacing any it had.
+func (c *Client) PutDaily(id string, days ...instantly.DailyAnalytics) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Daily == nil {
+		c.Daily = map[string][]instantly.DailyAnalytics{}
+	}
+	c.Daily[id] = append([]instantly.DailyAnalytics(nil), days...)
+}
+
 // UpdateCampaign implements instantly.Client.
 func (c *Client) UpdateCampaign(_ context.Context, id string, in instantly.UpdateCampaignInput) (instantly.Campaign, error) {
 	c.mu.Lock()
@@ -383,6 +418,31 @@ func (c *Client) DeleteLead(_ context.Context, id string) error {
 	}
 	delete(c.Leads, id)
 	return nil
+}
+
+// DeleteLeads implements instantly.Client.
+func (c *Client) DeleteLeads(_ context.Context, in instantly.DeleteLeadsInput) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.record("DeleteLeads", in); err != nil {
+		return 0, err
+	}
+	only := map[string]bool{}
+	for _, id := range in.IDs {
+		only[id] = true
+	}
+	count := 0
+	for id, lead := range c.Leads {
+		if lead.Campaign != in.CampaignID || (len(only) > 0 && !only[id]) {
+			continue
+		}
+		if in.Limit > 0 && count >= in.Limit {
+			break
+		}
+		delete(c.Leads, id)
+		count++
+	}
+	return count, nil
 }
 
 // UpdateInterestStatus implements instantly.Client. It updates every lead with that

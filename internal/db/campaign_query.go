@@ -46,6 +46,7 @@ type CampaignRow struct {
 	Error                 *string
 	LeadsTotal            int32
 	LeadsPushed           int32
+	ScheduledLaunchAt     *time.Time
 	CreatedAt             time.Time
 	UpdatedAt             time.Time
 
@@ -90,7 +91,7 @@ var campaignSelect = `
     c.id, c.name, c.status, c.source, c.brief, c.schedule, c.settings, c.steps, c.step_delays, c.weights_version,
     c.instantly_campaign_id, c.instantly_status, c.instantly_sending_status, c.launched_at, c.paused_at,
     c.completed_at, c.archived_at, c.last_synced_at, c.last_sync_error, c.error, c.leads_total, c.leads_pushed,
-    c.created_at, c.updated_at,
+    c.scheduled_launch_at, c.created_at, c.updated_at,
     ` + importedOr("contacted_count", "SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.last_contacted_at IS NOT NULL") + `::bigint,
     ` + importedOr("reply_count_unique", "SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.reply_count > 0") + `::bigint,
     ` + importedOr("total_opportunities", "SELECT count(*) FROM campaign_leads l WHERE l.campaign_id = c.id AND l.interest_status IN (1,2,3,4)") + `::bigint,
@@ -139,7 +140,7 @@ func (s *Store) ListCampaigns(ctx context.Context, f CampaignFilter, sort string
 		if err := rows.Scan(&r.ID, &r.Name, &r.Status, &r.Source, &r.Brief, &r.Schedule, &r.Settings, &r.Steps, &r.StepDelays,
 			&r.WeightsVersion, &r.InstantlyCampaignID, &r.InstantlyStatus, &r.InstantlySendingState, &r.LaunchedAt,
 			&r.PausedAt, &r.CompletedAt, &r.ArchivedAt, &r.LastSyncedAt, &r.LastSyncError, &r.Error, &r.LeadsTotal,
-			&r.LeadsPushed, &r.CreatedAt, &r.UpdatedAt, &r.Contacted, &r.Replied, &r.Interested, &r.Bounced,
+			&r.LeadsPushed, &r.ScheduledLaunchAt, &r.CreatedAt, &r.UpdatedAt, &r.Contacted, &r.Replied, &r.Interested, &r.Bounced,
 			&r.Unsubscribed, &r.SendsTotal, &r.SendsBounced, &r.Eligible, &r.Subscribed, &r.LastActivityAt); err != nil {
 			return nil, fmt.Errorf("db: scan campaign: %w", err)
 		}
@@ -167,7 +168,7 @@ func (s *Store) GetCampaignRow(ctx context.Context, id uuid.UUID) (CampaignRow, 
 	if err := rows.Scan(&r.ID, &r.Name, &r.Status, &r.Source, &r.Brief, &r.Schedule, &r.Settings, &r.Steps, &r.StepDelays,
 		&r.WeightsVersion, &r.InstantlyCampaignID, &r.InstantlyStatus, &r.InstantlySendingState, &r.LaunchedAt,
 		&r.PausedAt, &r.CompletedAt, &r.ArchivedAt, &r.LastSyncedAt, &r.LastSyncError, &r.Error, &r.LeadsTotal,
-		&r.LeadsPushed, &r.CreatedAt, &r.UpdatedAt, &r.Contacted, &r.Replied, &r.Interested, &r.Bounced,
+		&r.LeadsPushed, &r.ScheduledLaunchAt, &r.CreatedAt, &r.UpdatedAt, &r.Contacted, &r.Replied, &r.Interested, &r.Bounced,
 		&r.Unsubscribed, &r.SendsTotal, &r.SendsBounced, &r.Eligible, &r.Subscribed, &r.LastActivityAt); err != nil {
 		return CampaignRow{}, fmt.Errorf("db: scan campaign: %w", err)
 	}
@@ -216,8 +217,12 @@ type LeadRow struct {
 	OpenCount       int32
 	ClickCount      int32
 	ReplyCount      int32
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// ProviderRemovedAt is when the lead was deleted from Instantly; the lead and
+	// its history stay here.
+	ProviderRemovedAt     *time.Time
+	ProviderRemovedReason *string
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 
 	Email          string
 	FirstName      *string
@@ -251,7 +256,7 @@ const leadSelect = `
     l.id, l.campaign_id, l.contact_id, l.business_id, l.status, l.instantly_lead_id, l.instantly_status,
     l.interest_status, l.interest_label, l.pushed_at, l.push_attempts, l.last_push_error, l.last_contacted_at,
     l.last_opened_at, l.last_clicked_at, l.last_replied_at, l.open_count, l.click_count, l.reply_count,
-    l.created_at, l.updated_at,
+    l.provider_removed_at, l.provider_removed_reason, l.created_at, l.updated_at,
     c.email::text, c.first_name, c.last_name, c.company, c.title, c.lifecycle_stage, c.suppressed_at,
     COALESCE((SELECT array_agg(v.name ORDER BY va.step) FROM variant_assignments va JOIN email_variants v ON v.id = va.variant_id
               WHERE va.campaign_lead_id = l.id), '{}')::text[],
@@ -290,7 +295,7 @@ func (s *Store) ListCampaignLeadRows(ctx context.Context, f LeadFilter, sort str
 		if err := rows.Scan(&r.ID, &r.CampaignID, &r.ContactID, &r.BusinessID, &r.Status, &r.InstantlyLeadID,
 			&r.InstantlyStatus, &r.InterestStatus, &r.InterestLabel, &r.PushedAt, &r.PushAttempts, &r.LastPushError,
 			&r.LastContactedAt, &r.LastOpenedAt, &r.LastClickedAt, &r.LastRepliedAt, &r.OpenCount, &r.ClickCount,
-			&r.ReplyCount, &r.CreatedAt, &r.UpdatedAt, &r.Email, &r.FirstName, &r.LastName, &r.Company, &r.Title,
+			&r.ReplyCount, &r.ProviderRemovedAt, &r.ProviderRemovedReason, &r.CreatedAt, &r.UpdatedAt, &r.Email, &r.FirstName, &r.LastName, &r.Company, &r.Title,
 			&r.LifecycleStage, &r.SuppressedAt, &r.VariantNames, &r.SendsTotal); err != nil {
 			return nil, fmt.Errorf("db: scan campaign lead: %w", err)
 		}
@@ -324,7 +329,7 @@ func (s *Store) GetCampaignLeadRow(ctx context.Context, id uuid.UUID) (LeadRow, 
 	if err := rows.Scan(&r.ID, &r.CampaignID, &r.ContactID, &r.BusinessID, &r.Status, &r.InstantlyLeadID,
 		&r.InstantlyStatus, &r.InterestStatus, &r.InterestLabel, &r.PushedAt, &r.PushAttempts, &r.LastPushError,
 		&r.LastContactedAt, &r.LastOpenedAt, &r.LastClickedAt, &r.LastRepliedAt, &r.OpenCount, &r.ClickCount,
-		&r.ReplyCount, &r.CreatedAt, &r.UpdatedAt, &r.Email, &r.FirstName, &r.LastName, &r.Company, &r.Title,
+		&r.ReplyCount, &r.ProviderRemovedAt, &r.ProviderRemovedReason, &r.CreatedAt, &r.UpdatedAt, &r.Email, &r.FirstName, &r.LastName, &r.Company, &r.Title,
 		&r.LifecycleStage, &r.SuppressedAt, &r.VariantNames, &r.SendsTotal); err != nil {
 		return LeadRow{}, fmt.Errorf("db: scan campaign lead: %w", err)
 	}
@@ -525,6 +530,9 @@ type ImportFilter struct {
 	// PrimaryOnly keeps only each business's primary address; otherwise every
 	// address the business holds is a candidate.
 	PrimaryOnly bool
+	// ExcludeContacted skips addresses any campaign has already emailed. Once a
+	// lead is cleaned out of Instantly, this is what stops it being emailed again.
+	ExcludeContacted bool
 }
 
 // ImportCandidate is one address ready to become a contact.
@@ -606,6 +614,8 @@ func (s *Store) CountImportCandidates(ctx context.Context, f ImportFilter) (int6
 type ImportEmailState struct {
 	Suppressed bool
 	Existing   bool
+	// Contacted is set when any campaign has already emailed the address.
+	Contacted bool
 	// Excluded is set when a global exclusion covers the address.
 	Excluded bool
 }
@@ -620,7 +630,10 @@ func (s *Store) ClassifyImportEmails(ctx context.Context, campaignID uuid.UUID, 
 	}
 	const query = `SELECT c.email::text,
         c.suppressed_at IS NOT NULL,
-        cl.id IS NOT NULL
+        cl.id IS NOT NULL,
+        EXISTS (SELECT 1 FROM campaign_leads any_cl WHERE any_cl.contact_id = c.id
+                AND (any_cl.last_contacted_at IS NOT NULL
+                     OR EXISTS (SELECT 1 FROM email_sends s WHERE s.campaign_lead_id = any_cl.id)))
     FROM contacts c
     LEFT JOIN campaign_leads cl ON cl.contact_id = c.id AND cl.campaign_id = $1
     WHERE c.email = ANY($2::citext[])`
@@ -632,7 +645,7 @@ func (s *Store) ClassifyImportEmails(ctx context.Context, campaignID uuid.UUID, 
 	for rows.Next() {
 		var email string
 		var state ImportEmailState
-		if err := rows.Scan(&email, &state.Suppressed, &state.Existing); err != nil {
+		if err := rows.Scan(&email, &state.Suppressed, &state.Existing, &state.Contacted); err != nil {
 			return nil, fmt.Errorf("db: scan import email state: %w", err)
 		}
 		out[strings.ToLower(email)] = state

@@ -251,6 +251,7 @@ as real environment variables. **`.env` is gitignored and must never be committe
 | `KARVON_CAMPAIGN_ACCOUNTS_SYNC_INTERVAL` | `6h` | How often the sending-account mirror and the Mailchimp audiences refresh. |
 | `KARVON_CAMPAIGN_WEBHOOK_REPLAY_INTERVAL` | `30m` | How often failed Instantly deliveries are replayed. |
 | `KARVON_CAMPAIGN_LEADS_FULL_SYNC_INTERVAL` | `24h` | How often every campaign gets a full lead diff. |
+| `KARVON_INSTANTLY_CLEANUP_INTERVAL` | `6h` | How often automatic Instantly cleanup runs, when switched on in its settings. |
 | `KARVON_NEWSLETTER_SYNC_INTERVAL` | `30m` | How often Mailchimp member status is mirrored. |
 | `KARVON_CAMPAIGN_PUSH_CONCURRENCY` | `2` | Workers pushing leads to Instantly. |
 | `KARVON_CAMPAIGN_EVENT_CONCURRENCY` | `4` | Workers applying provider events. |
@@ -1031,6 +1032,7 @@ and is the only source of truth when no public URL is configured.
 | `newsletter_sync_members` | `KARVON_NEWSLETTER_SYNC_INTERVAL` (30m) | Mailchimp member status for everything we pushed |
 | `newsletter_sync_audiences` | 6h | The audience mirror |
 | `campaign_sync_inbox` | `KARVON_INBOX_SYNC_INTERVAL` (5m), and on every `reply_received` webhook | Received emails from the Unibox into `inbox_emails` |
+| `campaign_instantly_cleanup_auto` → `campaign_instantly_cleanup` | `KARVON_INSTANTLY_CLEANUP_INTERVAL` (6h) when automatic cleanup is on, or `POST /integrations/instantly/cleanup/runs` | Deletes leads Instantly has finished with from their Instantly campaigns, freeing uploaded-contact slots; Karvon keeps the lead and stamps `provider_removed_at` |
 
 Every campaign carries a `source`: `karvon` for one built and launched here,
 `instantly` for one started in Instantly and imported by the sync. An imported
@@ -1038,6 +1040,21 @@ campaign is mirrored, not edited — its name and status follow Instantly, its
 counters come from the Instantly analytics snapshot because its leads are never
 copied here, and editing, launching, importing leads into it or changing its
 mailboxes or variants answers `409`. Pause, resume, sync and archive still work.
+
+A launch can be scheduled: `POST /campaigns/{id}/launch` with `scheduled_at` moves
+the campaign to `scheduled` and queues the launch job for that moment, when the
+checklist is evaluated again. Nothing reaches Instantly before then. Each launch,
+schedule or reschedule writes a fresh `campaigns.launch_request_id` and the job
+carries it, so a job from an earlier request stands down instead of launching twice.
+
+Instantly caps "uploaded contacts" (every lead in a campaign, whatever its status),
+and deleting a lead from its campaign frees the slot. An Instantly cleanup
+(`/integrations/instantly/cleanup`, manual or on a timer) deletes the leads
+Instantly has finished with from Karvon-launched campaigns. The lead row, its sends
+and its timeline stay; the lead is stamped `provider_removed_at` and the contact gets
+a `removed_from_provider` event. Lead import skips addresses any campaign already
+emailed unless `exclude_contacted` is turned off, since Instantly no longer
+remembers them.
 
 Every inbound delivery is stored in `provider_events` under a `dedupe_key` — a
 SHA-256 of the payload's identifying fields, because neither provider sends an event

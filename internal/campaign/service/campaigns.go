@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 
 	"github.com/bory/karvon-be/internal/apperr"
 	"github.com/bory/karvon-be/internal/campaign"
@@ -268,27 +270,25 @@ func (s *Service) checklist(ctx context.Context, row db.CampaignRow, accounts []
 
 	add("sending_accounts", len(accounts) > 0, true, "Choose at least one sending account")
 
+	// Instantly's sequence is {{subject_N}}/{{body_N}} filled per lead from the
+	// variant it was assigned, so each step needs approved content or the email
+	// goes out blank. Weights are optional and never checked: with none set the
+	// variants on a step are split evenly.
 	steps := int(row.Steps)
-	weightsOK, approvedOK := true, true
+	contentOK := true
 	for step := 1; step <= steps; step++ {
-		total := 0
-		count := 0
+		usable := false
 		for _, v := range variants {
-			if int(v.Step) != step || v.AssignmentStatus != campaign.CampaignVariantActive {
-				continue
-			}
-			count++
-			total += int(v.Weight)
-			if !campaign.ContentUsable(v.VariantStatus) {
-				approvedOK = false
+			if int(v.Step) == step && v.AssignmentStatus == campaign.CampaignVariantActive &&
+				campaign.ContentUsable(v.VariantStatus) {
+				usable = true
 			}
 		}
-		if count == 0 || total != 100 {
-			weightsOK = false
+		if !usable {
+			contentOK = false
 		}
 	}
-	add("variants_weights_100", weightsOK, true, "Every step needs active variants whose weights total 100")
-	add("variants_approved", approvedOK, true, "Every attached variant must be approved")
+	add("content", contentOK, true, "Every step needs an approved email to send")
 
 	pending, err := s.store.CountPendingCampaignLeads(ctx, row.ID)
 	if err != nil {
@@ -296,8 +296,39 @@ func (s *Service) checklist(ctx context.Context, row db.CampaignRow, accounts []
 	}
 	add("leads_pending", pending > 0 || row.LeadsPushed > 0, true, "Import at least one lead")
 
+	// The only bar on the addresses themselves: the paid third-party verifier has
+	// called them deliverable. Once launched the pending queue drains, so a live
+	// campaign passes on what it already pushed.
+	verified, err := s.store.CountThirdPartyVerifiedPendingCampaignLeads(ctx, row.ID)
+	if err != nil {
+		return Checklist{}, apperr.Internal(err)
+	}
+	add("leads_verified", verified > 0 || row.LeadsPushed > 0, true, fmt.Sprintf(
+		"%d of %d pending leads are verified deliverable by the third-party service; at least one is required",
+		verified, pending))
+
 	_, schedErr := ScheduleFor(row.Schedule)
 	add("schedule_valid", schedErr == nil, true, "The sending schedule is invalid: "+errText(schedErr))
+
+	// Instantly's plan caps the contacts sitting in campaigns. Only checked when
+	// the cap is known, and never blocking: the usage is an estimate, and leads
+	// Instantly refuses are recorded as skipped rather than lost.
+	if settings.InstantlyContactLimit != nil {
+		usage, err := s.store.GetInstantlyUsage(ctx)
+		if err != nil {
+			return Checklist{}, apperr.Internal(err)
+		}
+		// Other campaigns' queued leads are about to take slots too; this
+		// campaign's own are already in the usage once it is past draft.
+		othersPending := usage.PendingLeads
+		if row.Status != campaign.CampaignDraft && row.Status != campaign.CampaignFailed {
+			othersPending = max(othersPending-pending, 0)
+		}
+		room := int64(*settings.InstantlyContactLimit) - usage.KarvonLeads - usage.ImportedLeads - othersPending
+		add("instantly_capacity", pending <= room, false, fmt.Sprintf(
+			"Instantly has room for about %d more contacts and this campaign has %d to push; run an Instantly cleanup to free slots",
+			max(room, 0), pending))
+	}
 
 	ready := true
 	for _, it := range items {
@@ -310,9 +341,20 @@ func (s *Service) checklist(ctx context.Context, row db.CampaignRow, accounts []
 
 /* -------------------------------------------------------------- launch */
 
-// LaunchCampaign marks a campaign ready and queues the launch job. It refuses with
-// the failing checklist items when the gate is not met.
-func (s *Service) LaunchCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error) {
+// maxScheduleAhead is the furthest ahead a launch can be scheduled.
+const maxScheduleAhead = 365 * 24 * time.Hour
+
+// LaunchCampaign launches a campaign now, or schedules it when scheduledAt is set.
+// A scheduled launch is prepared at Instantly straight away — contact slots
+// freed, campaign created, leads pushed — and only activated at its time.
+// The checklist is evaluated either way and refuses with the failing items when
+// the gate is not met; a scheduled launch evaluates it again when it fires, since
+// the campaign can still be edited while it waits.
+//
+// A scheduled campaign can be launched again: a new time reschedules it, no time
+// launches it now. Every call writes a fresh launch request id, which is what
+// makes the job of the earlier request stand down.
+func (s *Service) LaunchCampaign(ctx context.Context, id uuid.UUID, scheduledAt *time.Time) (db.CampaignRow, error) {
 	detail, err := s.GetCampaignDetail(ctx, id)
 	if err != nil {
 		return db.CampaignRow{}, err
@@ -321,31 +363,97 @@ func (s *Service) LaunchCampaign(ctx context.Context, id uuid.UUID) (db.Campaign
 		return db.CampaignRow{}, errImported()
 	}
 	switch detail.Campaign.Status {
-	case campaign.CampaignDraft, campaign.CampaignReady, campaign.CampaignFailed:
+	case campaign.CampaignDraft, campaign.CampaignReady, campaign.CampaignFailed, campaign.CampaignScheduled:
 	default:
 		return db.CampaignRow{}, apperr.Conflict("a %s campaign cannot be launched", detail.Campaign.Status)
 	}
-	if !detail.Checklist.Ready {
-		var fields []apperr.FieldError
-		for _, it := range detail.Checklist.Items {
-			if it.Blocking && !it.OK {
-				fields = append(fields, apperr.FieldError{Field: it.Key, Message: it.Message})
-			}
+	now := s.now()
+	if scheduledAt != nil {
+		at := scheduledAt.UTC()
+		switch {
+		case !at.After(now):
+			return db.CampaignRow{}, apperr.Validation("launch is invalid",
+				apperr.FieldError{Field: "scheduled_at", Message: "must be in the future; leave it out to launch now"})
+		case at.After(now.Add(maxScheduleAhead)):
+			return db.CampaignRow{}, apperr.Validation("launch is invalid",
+				apperr.FieldError{Field: "scheduled_at", Message: "must be within a year"})
 		}
-		return db.CampaignRow{}, &apperr.Error{Code: apperr.CodeConflict, Status: 409,
-			Message: "the campaign is not ready to launch", Fields: fields}
+		scheduledAt = &at
 	}
+	if err := checklistGate(detail.Checklist); err != nil {
+		return db.CampaignRow{}, err
+	}
+	// The earlier request's job (a scheduled launch being moved or brought
+	// forward) would stand down on its own; cancelling it just keeps the queue
+	// honest.
+	if detail.Campaign.Status == campaign.CampaignScheduled {
+		s.cancelJobs(ctx, id)
+	}
+	requestID := ids.New()
 	err = s.store.InTxRaw(ctx, func(tx pgx.Tx) error {
 		q := dbgen.New(tx)
-		if _, err := q.MarkCampaignReady(ctx, id); err != nil {
-			return fmt.Errorf("mark ready: %w", err)
+		args := campaign.LaunchArgs{CampaignID: id, RequestID: requestID}
+		if scheduledAt == nil {
+			if _, err := q.MarkCampaignReady(ctx, dbgen.MarkCampaignReadyParams{ID: id, LaunchRequestID: uuid.NullUUID{UUID: requestID, Valid: true}}); err != nil {
+				return fmt.Errorf("mark ready: %w", err)
+			}
+			return s.enqueueTx(ctx, tx, args)
 		}
-		return s.enqueueTx(ctx, tx, campaign.LaunchArgs{CampaignID: id})
+		if _, err := q.ScheduleCampaignLaunch(ctx, dbgen.ScheduleCampaignLaunchParams{
+			ID: id, ScheduledLaunchAt: scheduledAt, LaunchRequestID: uuid.NullUUID{UUID: requestID, Valid: true},
+		}); err != nil {
+			return fmt.Errorf("schedule launch: %w", err)
+		}
+		if s.queue == nil {
+			return errors.New("campaign: queue is not wired")
+		}
+		if _, err := s.queue.InsertTx(ctx, tx, args, &river.InsertOpts{ScheduledAt: *scheduledAt}); err != nil {
+			return fmt.Errorf("campaign: enqueue %s: %w", args.Kind(), err)
+		}
+		// Ready it at Instantly now (slots freed, campaign created, leads
+		// pushed); the scheduled job above only has to activate it.
+		return s.enqueueTx(ctx, tx, campaign.PrepareLaunchArgs{CampaignID: id, RequestID: requestID})
 	})
 	if err != nil {
 		return db.CampaignRow{}, apperr.Internal(err)
 	}
 	return s.campaignRow(ctx, id)
+}
+
+// UnscheduleCampaign cancels a scheduled launch and returns the campaign to draft.
+func (s *Service) UnscheduleCampaign(ctx context.Context, id uuid.UUID) (db.CampaignRow, error) {
+	current, err := s.campaign(ctx, id)
+	if err != nil {
+		return db.CampaignRow{}, err
+	}
+	if current.Status != campaign.CampaignScheduled {
+		return db.CampaignRow{}, apperr.Conflict("only a scheduled campaign can be unscheduled")
+	}
+	if _, err := s.store.UnscheduleCampaign(ctx, id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The launch fired between the read and the write.
+			return db.CampaignRow{}, apperr.Conflict("the scheduled launch has already started")
+		}
+		return db.CampaignRow{}, apperr.Internal(err)
+	}
+	s.cancelJobs(ctx, id)
+	return s.campaignRow(ctx, id)
+}
+
+// checklistGate refuses with the failing blocking items, so the client never has
+// to guess which one it was.
+func checklistGate(c Checklist) error {
+	if c.Ready {
+		return nil
+	}
+	var fields []apperr.FieldError
+	for _, it := range c.Items {
+		if it.Blocking && !it.OK {
+			fields = append(fields, apperr.FieldError{Field: it.Key, Message: it.Message})
+		}
+	}
+	return &apperr.Error{Code: apperr.CodeConflict, Status: 409,
+		Message: "the campaign is not ready to launch", Fields: fields}
 }
 
 // PauseCampaign pauses at Instantly and locally.

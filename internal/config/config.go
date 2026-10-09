@@ -196,8 +196,11 @@ type Config struct {
 	// to register webhooks and is otherwise optional.
 	PublicBaseURL string `env:"PUBLIC_BASE_URL"`
 
-	InstantlyBaseURL      string        `env:"INSTANTLY_BASE_URL" envDefault:"https://api.instantly.ai/api/v2"`
-	InstantlyTimeout      time.Duration `env:"INSTANTLY_TIMEOUT" envDefault:"30s"`
+	InstantlyBaseURL string        `env:"INSTANTLY_BASE_URL" envDefault:"https://api.instantly.ai/api/v2"`
+	InstantlyTimeout time.Duration `env:"INSTANTLY_TIMEOUT" envDefault:"30s"`
+	// InstantlyBulkTimeout bounds the bulk lead add and delete, which Instantly
+	// answers slowly; the push jobs get a River timeout above it.
+	InstantlyBulkTimeout  time.Duration `env:"INSTANTLY_BULK_TIMEOUT" envDefault:"3m"`
 	InstantlyRPS          float64       `env:"INSTANTLY_RPS" envDefault:"5"`
 	InstantlyLeadBatch    int           `env:"INSTANTLY_LEAD_BATCH" envDefault:"100"`
 	InstantlyLeadBatchGap time.Duration `env:"INSTANTLY_LEAD_BATCH_GAP" envDefault:"2s"`
@@ -239,11 +242,14 @@ type Config struct {
 	CampaignAccountsSyncInterval  time.Duration `env:"CAMPAIGN_ACCOUNTS_SYNC_INTERVAL" envDefault:"6h"`
 	CampaignWebhookReplayInterval time.Duration `env:"CAMPAIGN_WEBHOOK_REPLAY_INTERVAL" envDefault:"30m"`
 	CampaignLeadsFullSyncInterval time.Duration `env:"CAMPAIGN_LEADS_FULL_SYNC_INTERVAL" envDefault:"24h"`
-	NewsletterSyncInterval        time.Duration `env:"NEWSLETTER_SYNC_INTERVAL" envDefault:"30m"`
-	CampaignPushConcurrency       int           `env:"CAMPAIGN_PUSH_CONCURRENCY" envDefault:"2"`
-	CampaignEventConcurrency      int           `env:"CAMPAIGN_EVENT_CONCURRENCY" envDefault:"4"`
-	CampaignMaxImport             int           `env:"CAMPAIGN_MAX_IMPORT" envDefault:"50000"`
-	WebhookMaxBodyBytes           int64         `env:"WEBHOOK_MAX_BODY_BYTES" envDefault:"1048576"`
+	// InstantlyCleanupInterval is how often automatic Instantly cleanup runs, when
+	// it is switched on in the cleanup settings.
+	InstantlyCleanupInterval time.Duration `env:"INSTANTLY_CLEANUP_INTERVAL" envDefault:"6h"`
+	NewsletterSyncInterval   time.Duration `env:"NEWSLETTER_SYNC_INTERVAL" envDefault:"30m"`
+	CampaignPushConcurrency  int           `env:"CAMPAIGN_PUSH_CONCURRENCY" envDefault:"2"`
+	CampaignEventConcurrency int           `env:"CAMPAIGN_EVENT_CONCURRENCY" envDefault:"4"`
+	CampaignMaxImport        int           `env:"CAMPAIGN_MAX_IMPORT" envDefault:"50000"`
+	WebhookMaxBodyBytes      int64         `env:"WEBHOOK_MAX_BODY_BYTES" envDefault:"1048576"`
 
 	// InboxSyncInterval is the periodic inbox pass; each reply webhook also queues
 	// one, so this only matters for replies a webhook never reported.
@@ -454,6 +460,9 @@ func (c Config) Validate() error {
 	}
 	if c.InstantlyEmailsPerMinute <= 0 || c.InstantlyEmailsPerMinute > 20 {
 		errs = append(errs, errors.New(EnvPrefix+"INSTANTLY_EMAILS_PER_MINUTE must be between 0 and 20, Instantly's own limit"))
+	}
+	if c.InstantlyCleanupInterval < time.Minute {
+		errs = append(errs, errors.New(EnvPrefix+"INSTANTLY_CLEANUP_INTERVAL must be at least 1m"))
 	}
 	if c.InboxSyncInterval < time.Minute {
 		errs = append(errs, errors.New(EnvPrefix+"INBOX_SYNC_INTERVAL must be at least 1m"))

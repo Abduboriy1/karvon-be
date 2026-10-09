@@ -132,13 +132,29 @@ func (s *Server) GetCampaignChecklist(w http.ResponseWriter, r *http.Request, id
 
 // LaunchCampaign implements POST /campaigns/{id}/launch.
 func (s *Server) LaunchCampaign(w http.ResponseWriter, r *http.Request, id gen.IdPath) {
-	row, err := s.campaigns.LaunchCampaign(r.Context(), id)
+	var body gen.LaunchRequest
+	if err := decodeJSONIfPresent(r, &body); err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	row, err := s.campaigns.LaunchCampaign(r.Context(), id, body.ScheduledAt)
 	if err != nil {
 		WriteError(w, r, err)
 		return
 	}
-	// 202: the leads are pushed in the background; the campaign is still `launching`.
+	// 202: the leads are pushed in the background; the campaign is still
+	// `launching`, or `scheduled` until its time comes.
 	writeJSON(w, r, http.StatusAccepted, toAPICampaign(row))
+}
+
+// UnscheduleCampaign implements POST /campaigns/{id}/unschedule.
+func (s *Server) UnscheduleCampaign(w http.ResponseWriter, r *http.Request, id gen.IdPath) {
+	row, err := s.campaigns.UnscheduleCampaign(r.Context(), id)
+	if err != nil {
+		WriteError(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, toAPICampaign(row))
 }
 
 // PauseCampaign implements POST /campaigns/{id}/pause.
@@ -403,6 +419,9 @@ func toImportFilter(in gen.LeadImportFilter) db.ImportFilter {
 		Category:    in.Category,
 		JobID:       in.JobId,
 		PrimaryOnly: in.PrimaryOnly == nil || *in.PrimaryOnly,
+		// Defaults on: Instantly forgets a lead once it is cleaned out, so this is
+		// what keeps an already-emailed address out of the next campaign.
+		ExcludeContacted: in.ExcludeContacted == nil || *in.ExcludeContacted,
 	}
 	if in.BusinessIds != nil {
 		out.BusinessIDs = *in.BusinessIds

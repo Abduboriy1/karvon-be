@@ -140,6 +140,8 @@ type Campaign struct {
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 	Source                    string
+	ScheduledLaunchAt         *time.Time
+	LaunchRequestID           uuid.NullUUID
 }
 
 type CampaignAnalyticsSnapshot struct {
@@ -152,29 +154,32 @@ type CampaignAnalyticsSnapshot struct {
 }
 
 type CampaignLead struct {
-	ID              uuid.UUID
-	CampaignID      uuid.UUID
-	ContactID       uuid.UUID
-	BusinessID      uuid.NullUUID
-	Status          string
-	InstantlyLeadID *string
-	InstantlyStatus *int32
-	InterestStatus  *int32
-	InterestLabel   *string
-	ClaimedAt       *time.Time
-	PushedAt        *time.Time
-	PushAttempts    int32
-	LastPushError   *string
-	CustomVars      []byte
-	LastContactedAt *time.Time
-	LastOpenedAt    *time.Time
-	LastClickedAt   *time.Time
-	LastRepliedAt   *time.Time
-	OpenCount       int32
-	ClickCount      int32
-	ReplyCount      int32
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                    uuid.UUID
+	CampaignID            uuid.UUID
+	ContactID             uuid.UUID
+	BusinessID            uuid.NullUUID
+	Status                string
+	InstantlyLeadID       *string
+	InstantlyStatus       *int32
+	InterestStatus        *int32
+	InterestLabel         *string
+	ClaimedAt             *time.Time
+	PushedAt              *time.Time
+	PushAttempts          int32
+	LastPushError         *string
+	CustomVars            []byte
+	LastContactedAt       *time.Time
+	LastOpenedAt          *time.Time
+	LastClickedAt         *time.Time
+	LastRepliedAt         *time.Time
+	OpenCount             int32
+	ClickCount            int32
+	ReplyCount            int32
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
+	ProviderRemovedAt     *time.Time
+	ProviderRemovedReason *string
+	CleanupRunID          uuid.NullUUID
 }
 
 type CampaignSendingAccount struct {
@@ -192,6 +197,27 @@ type CampaignSetting struct {
 	InstantlyWebhookError     *string
 	DefaultAudienceID         uuid.NullUUID
 	UpdatedAt                 time.Time
+	InstantlyContactLimit     *int32
+	CleanupAutoEnabled        bool
+	CleanupScope              string
+	CleanupMinIdleDays        int32
+	CleanupIncludeReplied     bool
+}
+
+type CampaignStatsDaily struct {
+	CampaignID        uuid.UUID
+	Day               pgtype.Date
+	Sent              int32
+	Contacted         int32
+	NewLeadsContacted int32
+	Opened            int32
+	UniqueOpened      int32
+	Replies           int32
+	UniqueReplies     int32
+	Clicks            int32
+	UniqueClicks      int32
+	Opportunities     int32
+	FetchedAt         time.Time
 }
 
 type CampaignVariant struct {
@@ -452,6 +478,25 @@ type InboxEmail struct {
 	ProviderCreatedAt   time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+}
+
+type InstantlyCleanupRun struct {
+	ID             uuid.UUID
+	Trigger        string
+	Status         string
+	Scope          string
+	MinIdleDays    int32
+	IncludeReplied bool
+	CampaignIds    []uuid.UUID
+	MaxLeads       *int32
+	Selected       int32
+	Removed        int32
+	AlreadyGone    int32
+	Failed         int32
+	Error          *string
+	CreatedAt      time.Time
+	StartedAt      *time.Time
+	FinishedAt     *time.Time
 }
 
 type Job struct {

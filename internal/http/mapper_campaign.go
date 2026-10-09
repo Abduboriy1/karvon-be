@@ -134,6 +134,7 @@ func toAPICampaign(row db.CampaignRow) gen.Campaign {
 		InstantlyCampaignId:    row.InstantlyCampaignID,
 		InstantlyStatus:        widenInt32(row.InstantlyStatus),
 		InstantlySendingStatus: row.InstantlySendingState,
+		ScheduledLaunchAt:      utcPtr(row.ScheduledLaunchAt),
 		LaunchedAt:             utcPtr(row.LaunchedAt),
 		PausedAt:               utcPtr(row.PausedAt),
 		CompletedAt:            utcPtr(row.CompletedAt),
@@ -184,6 +185,7 @@ func toAPICampaignDetail(detail campaignsvc.CampaignDetail) gen.CampaignDetail {
 		InstantlyCampaignId:    row.InstantlyCampaignID,
 		InstantlyStatus:        widenInt32(row.InstantlyStatus),
 		InstantlySendingStatus: row.InstantlySendingState,
+		ScheduledLaunchAt:      utcPtr(row.ScheduledLaunchAt),
 		LaunchedAt:             utcPtr(row.LaunchedAt),
 		PausedAt:               utcPtr(row.PausedAt),
 		CompletedAt:            utcPtr(row.CompletedAt),
@@ -255,37 +257,39 @@ func toAPICampaignVariant(row dbgen.ListCampaignVariantsRow) gen.CampaignVariant
 
 func toAPICampaignLead(row db.LeadRow) gen.CampaignLead {
 	return gen.CampaignLead{
-		Id:              row.ID,
-		CampaignId:      row.CampaignID,
-		ContactId:       row.ContactID,
-		BusinessId:      nullUUID(row.BusinessID),
-		Status:          gen.CampaignLeadStatus(row.Status),
-		InstantlyLeadId: row.InstantlyLeadID,
-		InstantlyStatus: widenInt32(row.InstantlyStatus),
-		InterestStatus:  widenInt32(row.InterestStatus),
-		InterestLabel:   row.InterestLabel,
-		PushedAt:        utcPtr(row.PushedAt),
-		PushAttempts:    int(row.PushAttempts),
-		LastPushError:   row.LastPushError,
-		LastContactedAt: utcPtr(row.LastContactedAt),
-		LastOpenedAt:    utcPtr(row.LastOpenedAt),
-		LastClickedAt:   utcPtr(row.LastClickedAt),
-		LastRepliedAt:   utcPtr(row.LastRepliedAt),
-		OpenCount:       int(row.OpenCount),
-		ClickCount:      int(row.ClickCount),
-		ReplyCount:      int(row.ReplyCount),
-		CreatedAt:       utc(row.CreatedAt),
-		UpdatedAt:       utc(row.UpdatedAt),
-		Email:           row.Email,
-		FirstName:       row.FirstName,
-		LastName:        row.LastName,
-		Company:         row.Company,
-		Title:           row.Title,
-		LifecycleStage:  gen.ContactStage(row.LifecycleStage),
-		SuppressedAt:    utcPtr(row.SuppressedAt),
-		Exclusion:       toAPIExclusionRef(row.Exclusion),
-		VariantNames:    stringList(row.VariantNames),
-		SendsTotal:      row.SendsTotal,
+		Id:                    row.ID,
+		CampaignId:            row.CampaignID,
+		ContactId:             row.ContactID,
+		BusinessId:            nullUUID(row.BusinessID),
+		Status:                gen.CampaignLeadStatus(row.Status),
+		InstantlyLeadId:       row.InstantlyLeadID,
+		InstantlyStatus:       widenInt32(row.InstantlyStatus),
+		InterestStatus:        widenInt32(row.InterestStatus),
+		InterestLabel:         row.InterestLabel,
+		PushedAt:              utcPtr(row.PushedAt),
+		PushAttempts:          int(row.PushAttempts),
+		LastPushError:         row.LastPushError,
+		LastContactedAt:       utcPtr(row.LastContactedAt),
+		LastOpenedAt:          utcPtr(row.LastOpenedAt),
+		LastClickedAt:         utcPtr(row.LastClickedAt),
+		LastRepliedAt:         utcPtr(row.LastRepliedAt),
+		OpenCount:             int(row.OpenCount),
+		ClickCount:            int(row.ClickCount),
+		ReplyCount:            int(row.ReplyCount),
+		ProviderRemovedAt:     utcPtr(row.ProviderRemovedAt),
+		ProviderRemovedReason: providerRemovedReason(row.ProviderRemovedReason),
+		CreatedAt:             utc(row.CreatedAt),
+		UpdatedAt:             utc(row.UpdatedAt),
+		Email:                 row.Email,
+		FirstName:             row.FirstName,
+		LastName:              row.LastName,
+		Company:               row.Company,
+		Title:                 row.Title,
+		LifecycleStage:        gen.ContactStage(row.LifecycleStage),
+		SuppressedAt:          utcPtr(row.SuppressedAt),
+		Exclusion:             toAPIExclusionRef(row.Exclusion),
+		VariantNames:          stringList(row.VariantNames),
+		SendsTotal:            row.SendsTotal,
 	}
 }
 
@@ -293,27 +297,29 @@ func toAPICampaignLead(row db.LeadRow) gen.CampaignLead {
 // how a lead appears inside a contact's own response.
 func toAPICampaignLeadBase(row dbgen.CampaignLead) gen.CampaignLeadBase {
 	return gen.CampaignLeadBase{
-		Id:              row.ID,
-		CampaignId:      row.CampaignID,
-		ContactId:       row.ContactID,
-		BusinessId:      nullUUID(row.BusinessID),
-		Status:          gen.CampaignLeadStatus(row.Status),
-		InstantlyLeadId: row.InstantlyLeadID,
-		InstantlyStatus: widenInt32(row.InstantlyStatus),
-		InterestStatus:  widenInt32(row.InterestStatus),
-		InterestLabel:   row.InterestLabel,
-		PushedAt:        utcPtr(row.PushedAt),
-		PushAttempts:    int(row.PushAttempts),
-		LastPushError:   row.LastPushError,
-		LastContactedAt: utcPtr(row.LastContactedAt),
-		LastOpenedAt:    utcPtr(row.LastOpenedAt),
-		LastClickedAt:   utcPtr(row.LastClickedAt),
-		LastRepliedAt:   utcPtr(row.LastRepliedAt),
-		OpenCount:       int(row.OpenCount),
-		ClickCount:      int(row.ClickCount),
-		ReplyCount:      int(row.ReplyCount),
-		CreatedAt:       utc(row.CreatedAt),
-		UpdatedAt:       utc(row.UpdatedAt),
+		Id:                    row.ID,
+		CampaignId:            row.CampaignID,
+		ContactId:             row.ContactID,
+		BusinessId:            nullUUID(row.BusinessID),
+		Status:                gen.CampaignLeadStatus(row.Status),
+		InstantlyLeadId:       row.InstantlyLeadID,
+		InstantlyStatus:       widenInt32(row.InstantlyStatus),
+		InterestStatus:        widenInt32(row.InterestStatus),
+		InterestLabel:         row.InterestLabel,
+		PushedAt:              utcPtr(row.PushedAt),
+		PushAttempts:          int(row.PushAttempts),
+		LastPushError:         row.LastPushError,
+		LastContactedAt:       utcPtr(row.LastContactedAt),
+		LastOpenedAt:          utcPtr(row.LastOpenedAt),
+		LastClickedAt:         utcPtr(row.LastClickedAt),
+		LastRepliedAt:         utcPtr(row.LastRepliedAt),
+		OpenCount:             int(row.OpenCount),
+		ClickCount:            int(row.ClickCount),
+		ReplyCount:            int(row.ReplyCount),
+		ProviderRemovedAt:     utcPtr(row.ProviderRemovedAt),
+		ProviderRemovedReason: providerRemovedReason(row.ProviderRemovedReason),
+		CreatedAt:             utc(row.CreatedAt),
+		UpdatedAt:             utc(row.UpdatedAt),
 	}
 }
 
@@ -334,37 +340,39 @@ func toAPICampaignLeadDetail(detail campaignsvc.LeadDetail) gen.CampaignLeadDeta
 	}
 
 	return gen.CampaignLeadDetail{
-		Id:              row.ID,
-		CampaignId:      row.CampaignID,
-		ContactId:       row.ContactID,
-		BusinessId:      nullUUID(row.BusinessID),
-		Status:          gen.CampaignLeadStatus(row.Status),
-		InstantlyLeadId: row.InstantlyLeadID,
-		InstantlyStatus: widenInt32(row.InstantlyStatus),
-		InterestStatus:  widenInt32(row.InterestStatus),
-		InterestLabel:   row.InterestLabel,
-		PushedAt:        utcPtr(row.PushedAt),
-		PushAttempts:    int(row.PushAttempts),
-		LastPushError:   row.LastPushError,
-		LastContactedAt: utcPtr(row.LastContactedAt),
-		LastOpenedAt:    utcPtr(row.LastOpenedAt),
-		LastClickedAt:   utcPtr(row.LastClickedAt),
-		LastRepliedAt:   utcPtr(row.LastRepliedAt),
-		OpenCount:       int(row.OpenCount),
-		ClickCount:      int(row.ClickCount),
-		ReplyCount:      int(row.ReplyCount),
-		CreatedAt:       utc(row.CreatedAt),
-		UpdatedAt:       utc(row.UpdatedAt),
-		Email:           row.Email,
-		FirstName:       row.FirstName,
-		LastName:        row.LastName,
-		Company:         row.Company,
-		Title:           row.Title,
-		LifecycleStage:  gen.ContactStage(row.LifecycleStage),
-		SuppressedAt:    utcPtr(row.SuppressedAt),
-		Exclusion:       toAPIExclusionRef(row.Exclusion),
-		VariantNames:    stringList(row.VariantNames),
-		SendsTotal:      row.SendsTotal,
+		Id:                    row.ID,
+		CampaignId:            row.CampaignID,
+		ContactId:             row.ContactID,
+		BusinessId:            nullUUID(row.BusinessID),
+		Status:                gen.CampaignLeadStatus(row.Status),
+		InstantlyLeadId:       row.InstantlyLeadID,
+		InstantlyStatus:       widenInt32(row.InstantlyStatus),
+		InterestStatus:        widenInt32(row.InterestStatus),
+		InterestLabel:         row.InterestLabel,
+		PushedAt:              utcPtr(row.PushedAt),
+		PushAttempts:          int(row.PushAttempts),
+		LastPushError:         row.LastPushError,
+		LastContactedAt:       utcPtr(row.LastContactedAt),
+		LastOpenedAt:          utcPtr(row.LastOpenedAt),
+		LastClickedAt:         utcPtr(row.LastClickedAt),
+		LastRepliedAt:         utcPtr(row.LastRepliedAt),
+		OpenCount:             int(row.OpenCount),
+		ClickCount:            int(row.ClickCount),
+		ReplyCount:            int(row.ReplyCount),
+		ProviderRemovedAt:     utcPtr(row.ProviderRemovedAt),
+		ProviderRemovedReason: providerRemovedReason(row.ProviderRemovedReason),
+		CreatedAt:             utc(row.CreatedAt),
+		UpdatedAt:             utc(row.UpdatedAt),
+		Email:                 row.Email,
+		FirstName:             row.FirstName,
+		LastName:              row.LastName,
+		Company:               row.Company,
+		Title:                 row.Title,
+		LifecycleStage:        gen.ContactStage(row.LifecycleStage),
+		SuppressedAt:          utcPtr(row.SuppressedAt),
+		Exclusion:             toAPIExclusionRef(row.Exclusion),
+		VariantNames:          stringList(row.VariantNames),
+		SendsTotal:            row.SendsTotal,
 
 		Contact:     toAPIContactFromRow(detail.Contact),
 		Assignments: assignments,
@@ -434,9 +442,97 @@ func toAPILeadImportResult(in campaignsvc.ImportResult) gen.LeadImportResult {
 		SkippedSuppressed: in.SkippedSuppressed,
 		SkippedExcluded:   in.SkippedExcluded,
 		SkippedExisting:   in.SkippedExisting,
+		SkippedContacted:  in.SkippedContacted,
 		SkippedInvalid:    in.SkippedInvalid,
 		Capped:            in.Capped,
 	}
+}
+
+func providerRemovedReason(v *string) *gen.ProviderRemovedReason {
+	if v == nil {
+		return nil
+	}
+	reason := gen.ProviderRemovedReason(*v)
+	return &reason
+}
+
+/* -------------------------------------------------------- instantly cleanup */
+
+func toAPICleanupSettings(in campaignsvc.CleanupSettings) gen.InstantlyCleanupSettings {
+	return gen.InstantlyCleanupSettings{
+		Scope:          gen.InstantlyCleanupScope(in.Scope),
+		MinIdleDays:    in.MinIdleDays,
+		IncludeReplied: in.IncludeReplied,
+		AutoEnabled:    in.AutoEnabled,
+		ContactLimit:   in.ContactLimit,
+	}
+}
+
+func toAPICapacity(in campaignsvc.InstantlyCapacity) gen.InstantlyCapacity {
+	return gen.InstantlyCapacity{
+		Limit:         in.Limit,
+		InUse:         in.InUse,
+		Available:     in.Available,
+		KarvonLeads:   in.KarvonLeads,
+		ImportedLeads: in.ImportedLeads,
+		PendingLeads:  in.PendingLeads,
+	}
+}
+
+func toAPICleanupRun(row dbgen.InstantlyCleanupRun) gen.InstantlyCleanupRun {
+	campaignIDs := row.CampaignIds
+	if campaignIDs == nil {
+		campaignIDs = []uuid.UUID{}
+	}
+	return gen.InstantlyCleanupRun{
+		Id:             row.ID,
+		Trigger:        gen.InstantlyCleanupRunTrigger(row.Trigger),
+		Status:         gen.InstantlyCleanupRunStatus(row.Status),
+		Scope:          gen.InstantlyCleanupScope(row.Scope),
+		MinIdleDays:    int(row.MinIdleDays),
+		IncludeReplied: row.IncludeReplied,
+		CampaignIds:    campaignIDs,
+		MaxLeads:       widenInt32(row.MaxLeads),
+		Selected:       int(row.Selected),
+		Removed:        int(row.Removed),
+		AlreadyGone:    int(row.AlreadyGone),
+		Failed:         int(row.Failed),
+		Error:          row.Error,
+		CreatedAt:      utc(row.CreatedAt),
+		StartedAt:      utcPtr(row.StartedAt),
+		FinishedAt:     utcPtr(row.FinishedAt),
+	}
+}
+
+func toAPICleanupRunPtr(row *dbgen.InstantlyCleanupRun) *gen.InstantlyCleanupRun {
+	if row == nil {
+		return nil
+	}
+	out := toAPICleanupRun(*row)
+	return &out
+}
+
+func toAPICleanupOverview(in campaignsvc.CleanupOverview) gen.InstantlyCleanupOverview {
+	return gen.InstantlyCleanupOverview{
+		Settings:    toAPICleanupSettings(in.Settings),
+		Capacity:    toAPICapacity(in.Capacity),
+		EligibleNow: in.EligibleNow,
+		ActiveRun:   toAPICleanupRunPtr(in.ActiveRun),
+		LastRun:     toAPICleanupRunPtr(in.LastRun),
+	}
+}
+
+func toAPICleanupPreview(in campaignsvc.CleanupPreview) gen.InstantlyCleanupPreview {
+	campaigns := make([]gen.InstantlyCleanupCampaign, 0, len(in.Campaigns))
+	for _, c := range in.Campaigns {
+		campaigns = append(campaigns, gen.InstantlyCleanupCampaign{
+			Campaign:        gen.CampaignSummary{Id: c.CampaignID, Name: c.Name, Status: gen.CampaignStatus(c.Status)},
+			InInstantly:     c.InInstantly,
+			Eligible:        c.Eligible,
+			LastContactedAt: utcPtr(c.LastActivity),
+		})
+	}
+	return gen.InstantlyCleanupPreview{Eligible: in.Eligible, Campaigns: campaigns, Capacity: toAPICapacity(in.Capacity)}
 }
 
 /* --------------------------------------------------------------- contacts */
@@ -1163,9 +1259,14 @@ func toAPIFunnel(in []campaignsvc.FunnelStep) []gen.FunnelStep {
 
 func toAPIOverview(in campaignsvc.Overview) gen.CampaignOverview {
 	return gen.CampaignOverview{
-		Campaigns:          counts(in.Campaigns),
-		ContactsByStage:    counts(in.ContactsByStage),
-		Local:              toAPIMetrics(in.Local),
+		Campaigns:       counts(in.Campaigns),
+		ContactsByStage: counts(in.ContactsByStage),
+		Local:           toAPIMetrics(in.Local),
+		Instantly: gen.ImportedTotals{
+			Campaigns:  in.Instantly.Campaigns,
+			Metrics:    toAPIMetrics(in.Instantly.Metrics),
+			Interested: in.Instantly.Interested,
+		},
 		Interested:         in.Interested,
 		NewsletterEligible: in.NewsletterEligible,
 		Subscribers:        in.Subscribers,
